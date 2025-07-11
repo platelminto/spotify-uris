@@ -3,11 +3,6 @@
 load_csv.py  –  fast CSV → PostgreSQL with conflict policy,
 row-provenance, metrics, and conflict logging.
 
-Usage examples
---------------
-  python load_csv.py csvs/artists.csv --source MPD
-  python load_csv.py csvs/albums.csv  --source MPD
-  python load_csv.py csvs/tracks.csv  --source MPD
 """
 
 import os, sys, pathlib, time, psycopg
