@@ -1,7 +1,7 @@
 [project]
-name = "get-spotify-uris"
+name = "spotify-uris"
 version = "0.1.0"
-description = "Add your description here"
+description = " Code to try and grab all Spotify URIs. "
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
