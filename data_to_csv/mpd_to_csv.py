@@ -12,9 +12,11 @@ Strategy
 • One worker process per JSON file → pulls lists of track dicts.
 • Each worker returns three Python sets (artists/albums/tracks) so
   the main process can merge/dedupe cheaply.
-• Main process batches 50 k new rows per CSV flush to limit RAM.
+• Main process batches 100 k new rows per CSV flush to limit RAM.
 
 """
+
+# Data is from https://www.kaggle.com/datasets/himanshuwagh/spotify-million/data
 
 import csv, orjson as json, pathlib, concurrent.futures, itertools
 from collections import defaultdict
