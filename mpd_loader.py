@@ -1,37 +1,94 @@
-#!/usr/bin/env python
 """
-load_csv.py  –  fast CSV → PostgreSQL with conflict policy,
-row-provenance, metrics, and conflict logging.
+mpd_loader.py - Configuration for loading MPD (Million Playlist Dataset) CSV files
 
+Defines CSV structure and merge logic for MPD format data.
 """
 
-import os, sys, pathlib, time, psycopg
-from datetime import datetime, timezone
-from dotenv import load_dotenv
+from load_csv_engine import DEFAULT_POLICY
 
-load_dotenv()  # reads PG_URL or DATABASE_URL
+DEFAULT_SOURCE = "MPD"
 
-csv_path = pathlib.Path("csvs/mpd/albums.csv")
-SOURCE = "MPD"
-TIMESTAMP = datetime.now(timezone.utc)
-
-# ────────────────────────────── CSV Column Definitions
-# Define which columns are present in your CSV files
+# Define which columns are present in MPD CSV files
 CSV_COLUMNS = {
-    "artists": ["spotify_uri", "name"],  # MPD format (no genres)
+    "artists": ["spotify_uri", "name"],  # MPD format (no mbid, no genres)
     "albums": [
         "spotify_uri",
         "name",
         "artist_spotify_uris",
-    ],  # Changed to list format
+    ],  # Now with artist lists!
     "tracks": [
         "spotify_uri",
         "name",
         "duration_ms",
         "album_spotify_uri",
         "artist_spotify_uris",
-    ],  # Changed to list format
+    ],  # Now with artist lists!
 }
+
+POLICY = {
+    "artists": {
+        "name": "prefer_incoming",
+        "spotify_uri": "prefer_non_null",
+    },
+    "albums": {
+        "name": "prefer_incoming",
+        "album_type": "prefer_non_null",
+        "spotify_release_date": "prefer_non_null",
+        "release_date_precision": "prefer_non_null",
+        "n_tracks": "prefer_non_null",
+    },
+    "tracks": {
+        "name": "prefer_incoming",
+        "duration_ms": "prefer_non_null",
+        "explicit": "prefer_non_null",
+        "disc_number": "prefer_non_null",
+        "track_number": "prefer_non_null",
+    },
+}
+
+
+def get_policy(entity):
+    """Get policy for entity, merging default with config-specific overrides"""
+    default = DEFAULT_POLICY.get(entity, {})
+    config_policy = POLICY.get(entity, {})
+
+    # Start with default, override with config-specific values
+    merged = default.copy()
+    merged.update(config_policy)
+
+    # Only keep policies for columns that exist in this CSV
+    csv_columns = CSV_COLUMNS.get(entity, [])
+    return {col: policy for col, policy in merged.items() if col in csv_columns}
+
+
+def build_set(entity: str, cols: list[str], source: str, timestamp: str) -> str:
+    """Generate SET clause obeying policy."""
+    policy = get_policy(entity)
+    parts = []
+    csv_cols = CSV_COLUMNS[entity]
+    for col in cols:
+        if col in csv_cols:  # Only if column exists in CSV
+            mode = policy.get(col, "prefer_incoming")
+            if mode == "prefer_incoming":
+                parts.append(f"{col}=EXCLUDED.{col}")
+            elif mode == "prefer_non_null":
+                parts.append(f"{col}=COALESCE({entity}.{col},EXCLUDED.{col})")
+            elif mode == "prefer_longer":
+                parts.append(
+                    f"{col}=CASE WHEN length(EXCLUDED.{col})>length({entity}.{col}) "
+                    f"THEN EXCLUDED.{col} ELSE {entity}.{col} END"
+                )
+    parts.append(f"source_name='{source}'")
+    parts.append(f"ingested_at='{timestamp}'")
+    return ", ".join(parts)
+
+
+def col_or_null(entity: str, col: str, prefix: str = "src") -> str:
+    """Return column reference if in CSV, otherwise NULL"""
+    if col in CSV_COLUMNS[entity]:
+        return f"{prefix}.{col}"
+    return "NULL"
+
 
 # Define all possible columns for each entity (for the database tables)
 ALL_COLUMNS = {
@@ -57,87 +114,32 @@ ALL_COLUMNS = {
     },
 }
 
-# Debug: Check first few lines of CSV
-with open(csv_path, "r") as f:
-    for i in range(5):
-        line = f.readline().strip()
-        print(f"[DEBUG] Line {i}: {line}")
+# Handle list fields as text in staging (will be parsed later)
+STAGING_OVERRIDES = {"artist_spotify_uris": "text", "genres": "text"}
 
-# ────────────────────────────── Conflict-resolution policy
-POLICY = {
-    "artists": {
-        "name": "prefer_incoming",
-        "mbid": "prefer_non_null",
-        "spotify_uri": "prefer_non_null",
-    },
-    "albums": {
-        "name": "prefer_incoming",
-        "album_type": "prefer_non_null",
-        "spotify_release_date": "prefer_non_null",
-        "release_date_precision": "prefer_non_null",
-        "n_tracks": "prefer_non_null",
-        "mbid": "prefer_non_null",
-        "spotify_uri": "prefer_non_null",
-    },
-    "tracks": {
-        "name": "prefer_incoming",
-        "duration_ms": "prefer_non_null",
-        "explicit": "prefer_non_null",
-        "disc_number": "prefer_non_null",
-        "track_number": "prefer_non_null",
-        "album_id": "prefer_non_null",
-        "mbid": "prefer_non_null",
-        "spotify_uri": "prefer_non_null",
-    },
-}
+# Policy overrides - only specify what's different from defaults
+# For MPD, we use defaults for everything, so this is empty!
+POLICY = {}
 
 
-def build_set(entity: str, cols: list[str]) -> str:
-    """Generate SET clause obeying POLICY."""
-    rules = POLICY[entity]
-    parts = []
-    # Only update columns that are in our CSV
-    csv_cols = CSV_COLUMNS[entity]  # Remove plural 's'
-    for col in cols:
-        if col in csv_cols:  # Only if column exists in CSV
-            mode = rules.get(col, "prefer_incoming")
-            if mode == "prefer_incoming":
-                parts.append(f"{col}=EXCLUDED.{col}")
-            elif mode == "prefer_non_null":
-                parts.append(f"{col}=COALESCE({entity}.{col},EXCLUDED.{col})")
-            elif mode == "prefer_longer":
-                parts.append(
-                    f"{col}=CASE WHEN length(EXCLUDED.{col})>length({entity}.{col}) "
-                    f"THEN EXCLUDED.{col} ELSE {entity}.{col} END"
-                )
-    parts.append(f"source_name='{SOURCE}'")
-    parts.append(f"ingested_at='{TIMESTAMP.isoformat()}'")
-    return ", ".join(parts)
+# Helper functions specific to this loader
 
 
-# Helper to get column value or NULL
-def col_or_null(entity: str, col: str, prefix: str = "src") -> str:
-    """Return column reference if in CSV, otherwise NULL"""
-    if col in CSV_COLUMNS[entity]:
-        return f"{prefix}.{col}"
-    return "NULL"
-
-
-# ────────────────────────────── Merge builders
-def artist_merge():
+def artist_merge(source: str, timestamp: str) -> str:
+    """Generate merge SQL for artists"""
     # Only update columns that exist in CSV
     updatable_cols = [
         c for c in ["name", "mbid", "spotify_uri"] if c in CSV_COLUMNS["artists"]
     ]
-    upd = build_set("artists", updatable_cols)
+    upd = build_set("artists", updatable_cols, source, timestamp)
 
     return f"""
 WITH src AS (
     SELECT DISTINCT ON (s.spotify_uri) 
            s.spotify_uri,
            s.name,
-           '{SOURCE}'::text AS source_name,
-           '{TIMESTAMP.isoformat()}'::timestamptz AS ingested_at
+           '{source}'::text AS source_name,
+           '{timestamp}'::timestamptz AS ingested_at
     FROM staging_artists s
     WHERE s.spotify_uri IS NOT NULL
 )
@@ -149,7 +151,8 @@ RETURNING TRUE AS updated;
 """
 
 
-def album_merge():
+def album_merge(source: str, timestamp: str) -> str:
+    """Generate merge SQL for albums with artist association handling"""
     # Only update columns that exist in CSV
     updatable_cols = [
         c
@@ -164,7 +167,7 @@ def album_merge():
         ]
         if c in CSV_COLUMNS["albums"]
     ]
-    upd = build_set("albums", updatable_cols)
+    upd = build_set("albums", updatable_cols, source, timestamp)
 
     # Build insert column list dynamically
     insert_cols = ["spotify_uri", "mbid", "name", "source_name", "ingested_at"]
@@ -190,8 +193,8 @@ def album_merge():
 
     return f"""
 WITH src AS (
-    SELECT *, '{SOURCE}'::text AS source_name,
-           '{TIMESTAMP.isoformat()}'::timestamptz AS ingested_at
+    SELECT *, '{source}'::text AS source_name,
+           '{timestamp}'::timestamptz AS ingested_at
     FROM staging_albums
 ),
 up AS (
@@ -201,7 +204,7 @@ up AS (
     ON CONFLICT (spotify_uri) DO UPDATE SET {upd}
     RETURNING id, spotify_uri, TRUE AS updated
 )
--- Link albums to artists from artist list
+-- Link albums to artists from artist list (if artist_spotify_uris column exists)
 INSERT INTO album_artists (album_id, artist_id, position)
 SELECT DISTINCT up.id, a.id, 
        -- Use array position as the artist position
@@ -221,11 +224,14 @@ JOIN artists a ON a.spotify_uri = ANY(
     )
 )
 WHERE s.artist_spotify_uris != '[]' AND s.artist_spotify_uris IS NOT NULL
+  AND EXISTS (SELECT 1 FROM information_schema.columns 
+              WHERE table_name = 'staging_albums' AND column_name = 'artist_spotify_uris')
 ON CONFLICT (album_id, artist_id) DO UPDATE SET position = EXCLUDED.position;
 """
 
 
-def track_merge():
+def track_merge(source: str, timestamp: str) -> str:
+    """Generate merge SQL for tracks with artist association handling"""
     # Only update columns that exist in CSV
     updatable_cols = [
         c
@@ -241,7 +247,7 @@ def track_merge():
         ]
         if c in CSV_COLUMNS["tracks"]
     ]
-    upd = build_set("tracks", updatable_cols)
+    upd = build_set("tracks", updatable_cols, source, timestamp)
 
     # Build insert column list dynamically
     insert_cols = ["spotify_uri", "mbid", "name", "source_name", "ingested_at"]
@@ -266,8 +272,8 @@ def track_merge():
 
     return f"""
 WITH src AS (
-    SELECT *, '{SOURCE}'::text AS source_name,
-           '{TIMESTAMP.isoformat()}'::timestamptz AS ingested_at
+    SELECT *, '{source}'::text AS source_name,
+           '{timestamp}'::timestamptz AS ingested_at
     FROM staging_tracks
 ),
 up AS (
@@ -278,7 +284,7 @@ up AS (
     ON CONFLICT (spotify_uri) DO UPDATE SET {upd}
     RETURNING id, spotify_uri, TRUE AS updated
 )
--- Link tracks to artists from artist list
+-- Link tracks to artists from artist list (if artist_spotify_uris column exists)
 INSERT INTO track_artists (track_id, artist_id, position)
 SELECT DISTINCT up.id, a.id,
        -- Use array position as the artist position
@@ -298,92 +304,27 @@ JOIN artists a ON a.spotify_uri = ANY(
     )
 )
 WHERE s.artist_spotify_uris != '[]' AND s.artist_spotify_uris IS NOT NULL
+  AND EXISTS (SELECT 1 FROM information_schema.columns 
+              WHERE table_name = 'staging_tracks' AND column_name = 'artist_spotify_uris')
 ON CONFLICT (track_id, artist_id) DO UPDATE SET position = EXCLUDED.position;
 """
 
 
-# ────────────────────────────── Settings per CSV
-def build_staging_ddl(entity: str) -> str:
-    """Build DDL for staging table based on CSV columns"""
-    cols = []
-    for col in CSV_COLUMNS[entity]:
-        if col == "artist_spotify_uris":
-            # Handle list fields as text in staging, we'll parse them later
-            cols.append(f"{col} text")
-        else:
-            col_type = ALL_COLUMNS[entity].get(col, "text")
-            cols.append(f"{col} {col_type}")
-    return ", ".join(cols)
-
-
+# Configuration mapping
 SETTINGS = {
-    "artists.csv": dict(
-        entity="artists",
-        staging="staging_artists",
-        ddl=build_staging_ddl("artists"),
-        columns=CSV_COLUMNS["artists"],
-        merge_sql=artist_merge(),
-    ),
-    "albums.csv": dict(
-        entity="albums",
-        staging="staging_albums",
-        ddl=build_staging_ddl("albums"),
-        columns=CSV_COLUMNS["albums"],
-        merge_sql=album_merge(),
-    ),
-    "tracks.csv": dict(
-        entity="tracks",
-        staging="staging_tracks",
-        ddl=build_staging_ddl("tracks"),
-        columns=CSV_COLUMNS["tracks"],
-        merge_sql=track_merge(),
-    ),
+    "artists": {
+        "staging": "staging_artists",
+        "columns": CSV_COLUMNS["artists"],
+        "merge_func": artist_merge,
+    },
+    "albums": {
+        "staging": "staging_albums",
+        "columns": CSV_COLUMNS["albums"],
+        "merge_func": album_merge,
+    },
+    "tracks": {
+        "staging": "staging_tracks",
+        "columns": CSV_COLUMNS["tracks"],
+        "merge_func": track_merge,
+    },
 }
-
-
-# ────────────────────────────── Main
-def main():
-    if csv_path.name not in SETTINGS:
-        sys.exit("File must be artists.csv, albums.csv or tracks.csv")
-    cfg = SETTINGS[csv_path.name]
-    t0 = time.time()
-    pg_url = os.getenv("PG_URL") or os.getenv("DATABASE_URL")
-    if not pg_url:
-        sys.exit("Set PG_URL or DATABASE_URL in your .env")
-    with psycopg.connect(pg_url, autocommit=False) as conn:
-        # Drop and recreate staging table to ensure correct types
-        conn.execute(f"DROP TABLE IF EXISTS {cfg['staging']};")  # type: ignore
-        conn.execute(f"CREATE UNLOGGED TABLE IF NOT EXISTS {cfg['staging']} ({cfg['ddl']});")  # type: ignore
-        # count before
-        before_result = conn.execute(f"SELECT count(*) FROM {cfg['entity']}").fetchone()  # type: ignore
-        before = before_result[0] if before_result else 0
-        try:
-            with conn.cursor() as cur:
-                # Use psycopg3's context manager for COPY
-                col_list = ", ".join(cfg["columns"])
-                with cur.copy(
-                    f"COPY {cfg['staging']} ({col_list}) FROM STDIN WITH CSV HEADER"  # type: ignore
-                ) as copy:
-                    with open(csv_path, "rb") as f:
-                        while data := f.read(8192):  # Read in chunks
-                            copy.write(data)
-            # Check how many rows landed
-            staging_result = conn.execute(f"SELECT count(*) FROM {cfg['staging']}").fetchone()  # type: ignore
-            rows_in_staging = staging_result[0] if staging_result else 0
-            print(f"[DEBUG] copied {rows_in_staging:,} → {cfg['staging']}")
-        except Exception as e:
-            print(f"[ERROR] COPY failed: {type(e).__name__}: {e}")
-            raise
-        # merge
-        conn.execute(cfg["merge_sql"])  # type: ignore
-        after_result = conn.execute(f"SELECT count(*) FROM {cfg['entity']}").fetchone()  # type: ignore
-        after = after_result[0] if after_result else 0
-        conn.commit()
-        elapsed = time.time() - t0
-        print(
-            f"✓ {csv_path.name}: +{after-before:,} rows | {elapsed:.1f}s | source '{SOURCE}'"
-        )
-
-
-if __name__ == "__main__":
-    main()
