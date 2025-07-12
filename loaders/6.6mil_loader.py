@@ -18,9 +18,8 @@ CSV_COLUMNS = {
 # Conflict resolution policy for 6.6mil data
 POLICY = {
     "artists": {
-        "name": "prefer_incoming",
+        "name": "prefer_non_null",
         "spotify_uri": "prefer_non_null",
-        "genres": "prefer_incoming",
     },
     "genre-associations": {
         "artists": "extend",

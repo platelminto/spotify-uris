@@ -209,15 +209,15 @@ class CSVLoader:
 
 
 if __name__ == "__main__":
-    from csv_to_db import mpd_loader
+    from loaders import mpd_loader as loader
 
     entity = "tracks"
 
     csv_loader = CSVLoader(
         entity=entity,
-        csv_paths=mpd_loader.CSV_PATHS,
-        csv_columns=mpd_loader.CSV_COLUMNS,
-        policy=mpd_loader.POLICY,
-        source_name=mpd_loader.SOURCE_NAME,
+        csv_paths=loader.CSV_PATHS,
+        csv_columns=loader.CSV_COLUMNS,
+        policy=loader.POLICY,
+        source_name=loader.SOURCE_NAME,
     )
     csv_loader.load()
