@@ -1,6 +1,8 @@
 backups/*
 csvs/*
 data/*
+.gemini/*
+.vscode/*
 
 # Python-generated files
 __pycache__/

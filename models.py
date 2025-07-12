@@ -47,7 +47,7 @@ class Artist(Base):
     id         = Column(Integer, primary_key=True)
     mbid       = Column(UUID,   unique=True, nullable=True)
     spotify_uri = Column(String, unique=True, nullable=True)
-    name       = Column(String, nullable=False)                 # -> CITEXT later
+    name       = Column(String, nullable=True)                  # -> CITEXT later, NULL allowed for auto-created artists
     source_name = Column(String)               # last feed that touched the row
     ingested_at = Column(DateTime)             # when it happened
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -62,7 +62,7 @@ class Album(Base):
     id         = Column(Integer, primary_key=True)
     mbid       = Column(UUID,   unique=True, nullable=True)
     spotify_uri = Column(String, unique=True, nullable=True)
-    name       = Column(String, nullable=False)                 # -> CITEXT later
+    name       = Column(String, nullable=True)                  # -> CITEXT later, NULL allowed for auto-created albums
     album_type = Column(Enum(AlbumType), nullable=True)
     source_name = Column(String)               # last feed that touched the row
     ingested_at = Column(DateTime)             # when it happened
@@ -81,7 +81,7 @@ class Track(Base):
     id         = Column(Integer, primary_key=True)
     mbid       = Column(UUID,   unique=True, nullable=True)
     spotify_uri = Column(String, unique=True, nullable=True)
-    name       = Column(String, nullable=False)                 # -> CITEXT later
+    name       = Column(String, nullable=True)                  # -> CITEXT later, NULL allowed for auto-created tracks
     duration_ms  = Column(Integer, nullable=True)
     explicit     = Column(Boolean, nullable=True)
     source_name = Column(String)               # last feed that touched the row

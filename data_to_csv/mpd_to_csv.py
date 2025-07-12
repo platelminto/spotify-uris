@@ -1,139 +1,137 @@
 #!/usr/bin/env python
 """
-Convert all JSON files in data/mpd/ into three deduplicated CSV files:
+Convert MPD JSON files to CSV - Simple pandas version
 
-  artists.csv     spotify_uri, name
-  albums.csv      spotify_uri, name, artist_spotify_uris
-  tracks.csv      spotify_uri, name, duration_ms,
-                  album_spotify_uri, artist_spotify_uris
-
-Strategy
-========
-• One worker process per JSON file → pulls lists of track dicts.
-• Each worker returns three Python sets (artists/albums/tracks) so
-  the main process can merge/dedupe cheaply.
-• Albums and tracks now collect ALL artists seen for that entity
-• Main process batches 100 k new rows per CSV flush to limit RAM.
-
+Much simpler than the original! Just read all JSON, convert to DataFrames,
+deduplicate, and save. Pandas handles all the complexity.
 """
 
-# Data is from https://www.kaggle.com/datasets/himanshuwagh/spotify-million/data
-
-import csv, orjson as json, pathlib, concurrent.futures, itertools
-from collections import defaultdict
+import json
+import pandas as pd
+from pathlib import Path
 from tqdm import tqdm
+import csv
 
-CPU_LIMIT = 12
-
-MPD_DIR = pathlib.Path("data/mpd")
-BATCH = 100_000  # flush to disk every N *new* rows
-CSV_ARTISTS = "csvs/mpd/artists.csv"
-CSV_ALBUMS = "csvs/mpd/albums.csv"
-CSV_TRACKS = "csvs/mpd/tracks.csv"
-
-
-def parse_file(path: pathlib.Path):
-    with path.open("rb") as fh:
-        doc = json.loads(fh.read())
-    artist_set, album_set, track_set = set(), set(), set()
-
-    for pl in doc["playlists"]:
-        for t in pl["tracks"]:
-            artist_uri = t["artist_uri"]
-            album_uri = t["album_uri"]
-            track_uri = t["track_uri"]
-
-            artist_set.add((artist_uri, t["artist_name"]))
-            album_set.add(
-                (album_uri, t["album_name"], [artist_uri])
-            )  # Single artist as list
-            track_set.add(
-                (
-                    track_uri,
-                    t["track_name"],
-                    t["duration_ms"],
-                    album_uri,
-                    [artist_uri],  # Single artist as list
-                )
-            )
-    return artist_set, album_set, track_set
-
-
-def csv_writer(path, header):
-    fh = open(path, "w", newline="", encoding="utf-8")
-    w = csv.writer(fh)
-    w.writerow(header)
-    return fh, w
+MPD_DIR = Path("data/mpd")
+OUTPUT_DIR = Path("csvs/mpd")
+BATCH_SIZE = 100_000  # Process in batches to avoid RAM issues
 
 
 def main():
-    # open CSVs & buffers - updated headers to match new format
-    fh_artist, writer_artist = csv_writer(CSV_ARTISTS, ["spotify_uri", "name"])
-    fh_album, writer_album = csv_writer(
-        CSV_ALBUMS, ["spotify_uri", "name", "artist_spotify_uris"]
-    )
-    fh_track, writer_track = csv_writer(
-        CSV_TRACKS,
-        [
-            "spotify_uri",
-            "name",
-            "duration_ms",
-            "album_spotify_uri",
-            "artist_spotify_uris",
-        ],
-    )
-
-    buffer_artist, buffer_album, buffer_track = [], [], []
-    seen_artist, seen_album, seen_track = set(), set(), set()
-
-    def flush():
-        if buffer_artist:
-            writer_artist.writerows(buffer_artist)
-            buffer_artist.clear()
-        if buffer_album:
-            writer_album.writerows(buffer_album)
-            buffer_album.clear()
-        if buffer_track:
-            writer_track.writerows(buffer_track)
-            buffer_track.clear()
-
-    json_files = sorted(MPD_DIR.glob("*.json"))
-    with concurrent.futures.ProcessPoolExecutor(max_workers=CPU_LIMIT) as ex:
-        for artist_set, album_set, track_set in tqdm(
-            ex.map(parse_file, json_files), total=len(json_files), desc="Parsing"
-        ):
-            # Artists
-            for artist in artist_set:
-                if artist[0] not in seen_artist:
-                    seen_artist.add(artist[0])
-                    buffer_artist.append([artist[0], artist[1]])
-            # Albums
-            for album in album_set:
-                if album[0] not in seen_album:
-                    seen_album.add(album[0])
-                    buffer_album.append(
-                        [album[0], album[1], str(album[2])]
-                    )  # Convert list to string
-            # Tracks
-            for track in track_set:
-                if track[0] not in seen_track:
-                    seen_track.add(track[0])
-                    buffer_track.append(
-                        [
-                            track[0],
-                            track[1],
-                            track[2],
-                            track[3],
-                            str(track[4]),  # Convert list to string
-                        ]
-                    )
-            if len(buffer_track) >= BATCH:
-                flush()
-
-    flush()
-    for fh in (fh_artist, fh_album, fh_track):
-        fh.close()
-    print("✓ CSVs ready:", CSV_ARTISTS, CSV_ALBUMS, CSV_TRACKS)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Check if CSV files already exist
+    csv_files = [
+        OUTPUT_DIR / "artists.csv",
+        OUTPUT_DIR / "albums.csv", 
+        OUTPUT_DIR / "tracks.csv"
+    ]
+    
+    existing_files = [f for f in csv_files if f.exists()]
+    if existing_files:
+        print(f"Found existing CSV files:")
+        for f in existing_files:
+            print(f"  - {f}")
+        
+        response = input("Delete existing files and continue? (y/N): ").strip().lower()
+        if response not in ['y', 'yes']:
+            print("Aborted.")
+            return
+        
+        # Delete existing files
+        for f in existing_files:
+            f.unlink()
+        print("Deleted existing files.")
+    
+    # Open CSV files for writing
+    artists_file = open(OUTPUT_DIR / "artists.csv", "w", newline="", encoding="utf-8")
+    albums_file = open(OUTPUT_DIR / "albums.csv", "w", newline="", encoding="utf-8")
+    tracks_file = open(OUTPUT_DIR / "tracks.csv", "w", newline="", encoding="utf-8")
+    
+    artists_writer = csv.writer(artists_file)
+    albums_writer = csv.writer(albums_file)
+    tracks_writer = csv.writer(tracks_file)
+    
+    # Write headers
+    artists_writer.writerow(["spotify_uri", "name"])
+    albums_writer.writerow(["spotify_uri", "name", "artist_spotify_uris"])
+    tracks_writer.writerow(["spotify_uri", "name", "duration_ms", "album_spotify_uri", "artist_spotify_uris"])
+    
+    # Keep track of seen URIs to avoid duplicates
+    seen_artists = set()
+    seen_albums = set()
+    seen_tracks = set()
+    
+    # Batch data
+    artists_batch = []
+    albums_batch = []
+    tracks_batch = []
+    
+    def flush_batches():
+        """Write current batches to CSV and clear them"""
+        if artists_batch:
+            artists_writer.writerows(artists_batch)
+            artists_batch.clear()
+        if albums_batch:
+            albums_writer.writerows(albums_batch)
+            albums_batch.clear()
+        if tracks_batch:
+            tracks_writer.writerows(tracks_batch)
+            tracks_batch.clear()
+    
+    json_files = list(MPD_DIR.glob("*.json"))
+    print(f"Processing {len(json_files)} JSON files in batches of {BATCH_SIZE:,}...")
+    
+    for json_file in tqdm(json_files, desc="Reading JSON"):
+        with open(json_file, "rb") as f:
+            data = json.loads(f.read())
+        
+        for playlist in data["playlists"]:
+            for track in playlist["tracks"]:
+                # Extract artist info
+                artist_uri = track["artist_uri"]
+                if artist_uri not in seen_artists:
+                    seen_artists.add(artist_uri)
+                    artists_batch.append([artist_uri, track["artist_name"]])
+                
+                # Extract album info  
+                album_uri = track["album_uri"]
+                if album_uri not in seen_albums:
+                    seen_albums.add(album_uri)
+                    albums_batch.append([
+                        album_uri,
+                        track["album_name"],
+                        track["artist_uri"]  # Single URI - will be comma-separated for multiple
+                    ])
+                
+                # Extract track info
+                track_uri = track["track_uri"]
+                if track_uri not in seen_tracks:
+                    seen_tracks.add(track_uri)
+                    tracks_batch.append([
+                        track_uri,
+                        track["track_name"],
+                        track["duration_ms"],
+                        track["album_uri"],
+                        track["artist_uri"]  # Single URI in list format
+                    ])
+                
+                # Flush when batch gets too big
+                if len(tracks_batch) >= BATCH_SIZE:
+                    flush_batches()
+    
+    # Flush remaining data
+    flush_batches()
+    
+    # Close files
+    artists_file.close()
+    albums_file.close()
+    tracks_file.close()
+    
+    print("✓ Done!")
+    print(f"  artists.csv: {len(seen_artists):,} rows")
+    print(f"  albums.csv: {len(seen_albums):,} rows")
+    print(f"  tracks.csv: {len(seen_tracks):,} rows")
 
 
 if __name__ == "__main__":
