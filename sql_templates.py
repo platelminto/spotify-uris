@@ -90,23 +90,13 @@ LEFT JOIN albums al ON al.spotify_uri = s.album_spotify_uri"""
     else:
         from_clause = f"\nFROM staging_{entity} s"
     
-    # Build WHERE clause for DO UPDATE to respect prefer_non_null policy
-    entity_policy = get_policy(entity, csv_columns, policy)
-    update_where_conditions = []
-    
-    for col in csv_columns[entity]:
-        if col in entity_policy and entity_policy[col] == "prefer_non_null":
-            update_where_conditions.append(f"{entity}.{col} IS NULL")
-    
-    update_where_clause = ""
-    if update_where_conditions:
-        update_where_clause = f" WHERE {' OR '.join(update_where_conditions)}"
+    # No WHERE clause needed - prefer_non_null logic is handled in the SET clause itself
     
     return f"""
 INSERT INTO {entity} ({', '.join(insert_cols)})
 SELECT DISTINCT {', '.join(insert_vals)}{from_clause}
 WHERE s.spotify_uri IS NOT NULL
-ON CONFLICT (spotify_uri) DO UPDATE SET {upd}{update_where_clause}
+ON CONFLICT (spotify_uri) DO UPDATE SET {upd}
 """
 
 

@@ -157,7 +157,8 @@ class CSVLoader:
                             while data := f.read(1048576):
                                 copy.write(data)
 
-                # Create indexes after data is loaded (much faster)
+
+                # Create indexes only if you want to look up data in staging
                 # self.create_staging_indexes(conn, entity)
                 
                 # Commit everything

@@ -106,18 +106,8 @@ class EntityStatsAnalyzer:
     
     def _build_policy_where_clause(self) -> str:
         """Build WHERE clause based on policy to match sql_templates logic"""
-        if not self.policy or self.entity not in self.policy:
-            return ""
-        
-        entity_policy = self.policy[self.entity]
-        update_conditions = []
-        
-        for col in self.csv_columns:
-            if col in entity_policy and entity_policy[col] == "prefer_non_null":
-                update_conditions.append(f"m.{col} IS NULL")
-        
-        if update_conditions:
-            return " OR ".join(update_conditions)
+        # No WHERE clause needed - prefer_non_null logic is handled per-column in SET clause
+        # Stats should show all potential changes, not filtered by prefer_non_null
         return ""
 
     def _analyze_column_changes(self) -> Dict[str, int]:
