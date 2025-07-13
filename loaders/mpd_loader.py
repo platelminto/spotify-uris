@@ -28,23 +28,18 @@ CSV_COLUMNS = {
 # Conflict resolution policy for MPD data
 POLICY = {
     "artists": {
-        "name": "prefer_incoming",
+        "name": "prefer_non_null",
         "spotify_uri": "prefer_non_null",
     },
     "albums": {
         "name": "prefer_incoming",
         "spotify_uri": "prefer_non_null",
+        "artists": "extend"
     },
     "tracks": {
         "name": "prefer_incoming",
         "spotify_uri": "prefer_non_null",
         "duration_ms": "prefer_non_null",
+        "artists": "extend",
     },
-    "artist-associations": {  # If there's multiple artists found for an album/track.
-        "albums": "extend",
-        "tracks": "extend",
-    },
-    # "genre-associations": {  # If there's multiple genres found for an artist.
-    #     "artists": "replace",
-    # },
 }

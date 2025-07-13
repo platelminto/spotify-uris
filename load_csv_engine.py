@@ -5,7 +5,7 @@ load_csv_engine.py - Generic CSV → PostgreSQL loader engine
 Usage: python load_csv_engine.py --config mpd_loader --file csvs/mpd/artists.csv
 """
 
-import os, sys, pathlib, time, psycopg, importlib
+import os, sys, pathlib, time, psycopg
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
@@ -14,7 +14,7 @@ load_dotenv()
 
 # Define all possible columns for each entity (for the database tables)
 ALL_COLUMNS = {
-    "artists": {"spotify_uri": "text", "mbid": "text", "name": "citext"},
+    "artists": {"spotify_uri": "text", "mbid": "text", "name": "citext", "genres": "text[]"},
     "albums": {
         "spotify_uri": "text",
         "mbid": "text",
@@ -35,53 +35,6 @@ ALL_COLUMNS = {
         "track_number": "int",
     },
 }
-
-
-# Helper functions for merge SQL generation
-
-
-def get_policy(entity, csv_columns, config_policy):
-    """Get policy for entity from config"""
-    if not config_policy or entity not in config_policy:
-        raise ValueError(f"No policy defined for entity: {entity}")
-
-    # Only keep policies for columns that exist in this CSV
-    entity_csv_columns = csv_columns.get(entity, [])
-    entity_policy = config_policy[entity]
-    return {
-        col: policy
-        for col, policy in entity_policy.items()
-        if col in entity_csv_columns
-    }
-
-
-def build_set(
-    entity: str,
-    cols: list[str],
-    source: str,
-    timestamp: str,
-    csv_columns: dict,
-    config_policy: dict,
-) -> str:
-    """Generate SET clause obeying policy."""
-    policy = get_policy(entity, csv_columns, config_policy)
-    parts = []
-    csv_cols = csv_columns[entity]
-    for col in cols:
-        if col in csv_cols:  # Only if column exists in CSV
-            mode = policy.get(col, "prefer_incoming")
-            if mode == "prefer_incoming":
-                parts.append(f"{col}=EXCLUDED.{col}")
-            elif mode == "prefer_non_null":
-                parts.append(f"{col}=COALESCE({entity}.{col},EXCLUDED.{col})")
-            elif mode == "prefer_longer":
-                parts.append(
-                    f"{col}=CASE WHEN length(EXCLUDED.{col})>length({entity}.{col}) "
-                    f"THEN EXCLUDED.{col} ELSE {entity}.{col} END"
-                )
-    parts.append(f"source_name='{source}'")
-    parts.append(f"ingested_at='{timestamp}'")
-    return ", ".join(parts)
 
 
 def col_or_null(entity: str, col: str, csv_columns: dict, prefix: str = "src") -> str:
@@ -128,6 +81,43 @@ class CSVLoader:
             cols.append(f"{col} {col_type}")
         return ", ".join(cols)
 
+    def create_staging_indexes(self, conn, entity):
+        """Create indexes on staging table to match main table performance characteristics"""
+        staging_table = f"staging_{entity}"
+        columns = self.csv_columns[entity]
+        
+        print(f"[DEBUG] Creating staging indexes for {staging_table} with columns: {columns}")
+        
+        # Create indexes based on available columns that match main table indexes
+        if entity == "artists" and "spotify_uri" in columns:
+            sql = f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_spotify_uri ON {staging_table}(spotify_uri)"
+            print(f"[DEBUG] Executing: {sql}")
+            conn.execute(sql)
+        if entity == "artists" and "mbid" in columns:
+            sql = f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_mbid ON {staging_table}(mbid)"
+            print(f"[DEBUG] Executing: {sql}")
+            conn.execute(sql)
+        if entity == "artists" and "name" in columns:
+            sql = f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_name ON {staging_table}(name)"
+            print(f"[DEBUG] Executing: {sql}")
+            conn.execute(sql)
+            
+        if entity == "albums" and "spotify_uri" in columns:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_spotify_uri ON {staging_table}(spotify_uri)")
+        if entity == "albums" and "mbid" in columns:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_mbid ON {staging_table}(mbid)")
+        if entity == "albums" and "name" in columns:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_name ON {staging_table}(name)")
+            
+        if entity == "tracks" and "spotify_uri" in columns:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_spotify_uri ON {staging_table}(spotify_uri)")
+        if entity == "tracks" and "mbid" in columns:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_mbid ON {staging_table}(mbid)")
+        if entity == "tracks" and "name" in columns:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_name ON {staging_table}(name)")
+        if entity == "tracks" and "album_spotify_uri" in columns:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_album_spotify_uri ON {staging_table}(album_spotify_uri)")
+
     def load(self):
         """Main loading logic"""
         entity = self.entity
@@ -149,32 +139,41 @@ class CSVLoader:
         with psycopg.connect(pg_url, autocommit=False) as conn:
             # Drop and recreate staging table
             staging_ddl = self.build_staging_ddl(entity)
-            conn.execute(f"DROP TABLE IF EXISTS {staging_table};")  # type: ignore
-            conn.execute(f"CREATE UNLOGGED TABLE IF NOT EXISTS {staging_table} ({staging_ddl});")  # type: ignore
+            conn.execute(f"DROP TABLE IF EXISTS {staging_table};") 
+            conn.execute(f"CREATE UNLOGGED TABLE IF NOT EXISTS {staging_table} ({staging_ddl});")
 
             # Count before
-            before_result = conn.execute(f"SELECT count(*) FROM {entity}").fetchone()  # type: ignore
+            before_result = conn.execute(f"SELECT count(*) FROM {entity}").fetchone()
             before = before_result[0] if before_result else 0
 
             try:
-                # COPY CSV data to staging
+                # COPY CSV data to staging first
                 with conn.cursor() as cur:
                     col_list = ", ".join(columns)
                     with cur.copy(
-                        f"COPY {staging_table} ({col_list}) FROM STDIN WITH CSV HEADER"  # type: ignore
+                        f"COPY {staging_table} ({col_list}) FROM STDIN WITH CSV HEADER"
                     ) as copy:
                         with open(self.csv_path, "rb") as f:
-                            while data := f.read(8192):
+                            while data := f.read(1048576):
                                 copy.write(data)
 
+                # Create indexes after data is loaded (much faster)
+                # self.create_staging_indexes(conn, entity)
+                
+                # Commit everything
+                conn.commit()
+                result = conn.execute(f"SELECT indexname FROM pg_indexes WHERE tablename = '{staging_table}'").fetchall()
+                print(f"[DEBUG] Indexes created: {[r[0] for r in result]}")
+
                 # Check staging results
-                staging_result = conn.execute(f"SELECT count(*) FROM {staging_table}").fetchone()  # type: ignore
+                staging_result = conn.execute(f"SELECT count(*) FROM {staging_table}").fetchone()
                 rows_in_staging = staging_result[0] if staging_result else 0
                 print(f"[DEBUG] Copied {rows_in_staging:,} → {staging_table}")
 
                 # Analyze staging vs main before merge
-                from staging_stats import analyze_staging_vs_main
-                analyze_staging_vs_main(conn, entity, self.csv_columns)
+                from stats.staging_stats import analyze_staging_vs_main
+                print("[DEBUG] Analyzing staging vs main before merge...")
+                analyze_staging_vs_main(conn, entity, self.csv_columns, self.policy)
                 
                 # Confirm before proceeding with merge
                 response = input("\nProceed with merge? (y/N): ").strip().lower()
@@ -189,16 +188,11 @@ class CSVLoader:
             # Execute merge SQL (can be single statement or list)
             merge_sql = merge_func(self.source_name, self.timestamp.isoformat())
 
-            if isinstance(merge_sql, list):
-                # Execute multiple statements in order
-                for sql in merge_sql:
-                    conn.execute(sql)  # type: ignore
-            else:
-                # Single statement (backwards compatible)
-                conn.execute(merge_sql)  # type: ignore
+            for sql in merge_sql:
+                conn.execute(sql)
 
             # Count after
-            after_result = conn.execute(f"SELECT count(*) FROM {entity}").fetchone()  # type: ignore
+            after_result = conn.execute(f"SELECT count(*) FROM {entity}").fetchone()
             after = after_result[0] if after_result else 0
 
             conn.commit()
@@ -209,9 +203,9 @@ class CSVLoader:
 
 
 if __name__ == "__main__":
-    from loaders import mpd_loader as loader
+    from loaders import six_mil_loader as loader
 
-    entity = "tracks"
+    entity = "artists"
 
     csv_loader = CSVLoader(
         entity=entity,

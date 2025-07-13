@@ -1,7 +1,7 @@
 import enum, os
 from datetime import datetime
 from sqlalchemy import (Column, String, Integer, Boolean, Date, Enum, ForeignKey,
-                        Table, DateTime, CheckConstraint, create_engine, text)
+                        Table, DateTime, CheckConstraint, create_engine, text, ARRAY)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, relationship
 from dotenv import load_dotenv
@@ -17,11 +17,6 @@ class DatePrecision(str, enum.Enum):
     year = "year"; month = "month"; day = "day"
 
 # — link tables —
-artist_genres = Table(
-    "artist_genres", Base.metadata,
-    Column("artist_id", ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True),
-    Column("genre_id",  ForeignKey("genres.id",  ondelete="CASCADE"), primary_key=True),
-)
 
 album_artists = Table(
     "album_artists", Base.metadata,
@@ -37,22 +32,17 @@ track_artists = Table(
     Column("position",  Integer, nullable=False),
 )
 
-class Genre(Base):
-    __tablename__ = "genres"
-    id   = Column(Integer, primary_key=True)
-    name = Column(String, unique=True, nullable=False)          # upgraded to CITEXT later
-
 class Artist(Base):
     __tablename__ = "artists"
     id         = Column(Integer, primary_key=True)
     mbid       = Column(UUID,   unique=True, nullable=True)
     spotify_uri = Column(String, unique=True, nullable=True)
     name       = Column(String, nullable=True)                  # -> CITEXT later, NULL allowed for auto-created artists
+    genres     = Column(ARRAY(String), nullable=True)          # Simple array of genre strings
     source_name = Column(String)               # last feed that touched the row
     ingested_at = Column(DateTime)             # when it happened
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    genres     = relationship("Genre", secondary=artist_genres, backref="artists")
     __table_args__ = (
         CheckConstraint("(mbid IS NOT NULL) OR (spotify_uri IS NOT NULL)", name="artist_has_id"),
     )
@@ -104,7 +94,7 @@ def init_db():
     # one-time: enable citext & convert name columns
     with eng.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS citext"))
-        for tbl in ("artists", "albums", "tracks", "genres"):
+        for tbl in ("artists", "albums", "tracks"):
             conn.execute(text(f"""
                 ALTER TABLE {tbl}
                 ALTER COLUMN name TYPE CITEXT
@@ -117,3 +107,11 @@ def init_db():
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_track_artists_track  ON track_artists(track_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_track_artists_artist ON track_artists(artist_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tracks_album        ON tracks(album_id)"))
+        
+        # Name indexes for performance on name-based queries and comparisons
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_albums_name  ON albums(name)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tracks_name  ON tracks(name)"))
+        
+        # Genre array index for fast queries
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_artists_genres ON artists USING GIN(genres)"))

@@ -5,7 +5,51 @@ Contains all the generic SQL patterns that can be shared across different
 data source loaders (MPD, Last.fm, MusicBrainz, etc.)
 """
 
-from load_csv_engine import get_policy, build_set, col_or_null
+
+def get_policy(entity, csv_columns, config_policy):
+    """Get policy for entity from config"""
+    if not config_policy or entity not in config_policy:
+        raise ValueError(f"No policy defined for entity: {entity}")
+
+    # Only keep policies for columns that exist in this CSV
+    entity_csv_columns = csv_columns.get(entity, [])
+    entity_policy = config_policy[entity]
+    return {
+        col: policy
+        for col, policy in entity_policy.items()
+        if col in entity_csv_columns
+    }
+
+def build_set(
+    entity: str,
+    cols: list[str],
+    source: str,
+    timestamp: str,
+    csv_columns: dict,
+    config_policy: dict,
+) -> str:
+    """Generate SET clause obeying policy."""
+    policy = get_policy(entity, csv_columns, config_policy)
+    parts = []
+    csv_cols = csv_columns[entity]
+    for col in cols:
+        if col in csv_cols:  # Only if column exists in CSV
+            mode = policy.get(col, "prefer_incoming")
+            if mode == "prefer_incoming":
+                parts.append(f"{col}=EXCLUDED.{col}")
+            elif mode == "prefer_non_null":
+                parts.append(f"{col}=CASE WHEN {entity}.{col} IS NOT NULL THEN {entity}.{col} ELSE EXCLUDED.{col} END")
+            elif mode == "prefer_longer":
+                parts.append(
+                    f"{col}=CASE WHEN length(EXCLUDED.{col})>length({entity}.{col}) "
+                    f"THEN EXCLUDED.{col} ELSE {entity}.{col} END"
+                )
+            elif mode == "extend" and col == "genres":
+                # Special handling for genres array - extend means merge arrays
+                parts.append(f"{col}=COALESCE({entity}.{col}, ARRAY[]::text[]) || COALESCE(EXCLUDED.{col}, ARRAY[]::text[])")
+    parts.append(f"source_name='{source}'")
+    parts.append(f"ingested_at='{timestamp}'")
+    return ", ".join(parts)
 
 
 def generate_entity_upsert(entity: str, csv_columns: dict, policy: dict, source: str, timestamp: str) -> str:
@@ -15,6 +59,7 @@ def generate_entity_upsert(entity: str, csv_columns: dict, policy: dict, source:
     
     # Add entity-specific optional columns if they exist
     optional_cols = {
+        "artists": ["genres"],
         "albums": ["album_type", "spotify_release_date", "release_date_precision", "n_tracks"],
         "tracks": ["duration_ms", "explicit", "disc_number", "track_number"]
     }
@@ -45,11 +90,23 @@ LEFT JOIN albums al ON al.spotify_uri = s.album_spotify_uri"""
     else:
         from_clause = f"\nFROM staging_{entity} s"
     
+    # Build WHERE clause for DO UPDATE to respect prefer_non_null policy
+    entity_policy = get_policy(entity, csv_columns, policy)
+    update_where_conditions = []
+    
+    for col in csv_columns[entity]:
+        if col in entity_policy and entity_policy[col] == "prefer_non_null":
+            update_where_conditions.append(f"{entity}.{col} IS NULL")
+    
+    update_where_clause = ""
+    if update_where_conditions:
+        update_where_clause = f" WHERE {' OR '.join(update_where_conditions)}"
+    
     return f"""
 INSERT INTO {entity} ({', '.join(insert_cols)})
 SELECT DISTINCT {', '.join(insert_vals)}{from_clause}
 WHERE s.spotify_uri IS NOT NULL
-ON CONFLICT (spotify_uri) DO UPDATE SET {upd}
+ON CONFLICT (spotify_uri) DO UPDATE SET {upd}{update_where_clause}
 """
 
 
@@ -108,21 +165,17 @@ ON CONFLICT (spotify_uri) DO NOTHING
 """
 
 
-def generate_association_sql(entity: str, csv_columns: dict, policy: dict = None) -> str:
-    """Generate association table SQL for linking entities to artists or genres"""
-    
+
+def generate_association_sql(entity: str, csv_columns: dict, policy: dict | None = None) -> str:
+    """Generate association table SQL for linking entities to artists"""
     # Handle artist associations for albums/tracks
     if entity in ["albums", "tracks"] and "artist_spotify_uris" in csv_columns[entity]:
         return _generate_artist_associations(entity, csv_columns, policy)
     
-    # Handle genre associations for artists
-    if entity == "artists" and "genres" in csv_columns[entity]:
-        return _generate_genre_associations(entity, csv_columns, policy)
-    
     return ""
 
 
-def _generate_artist_associations(entity: str, csv_columns: dict, policy: dict = None) -> str:
+def _generate_artist_associations(entity: str, csv_columns: dict, policy: dict | None = None) -> str:
     """Generate artist association SQL for albums/tracks"""
     
     association_table = f"{entity[:-1]}_artists"  # albums -> album_artists, tracks -> track_artists
@@ -132,17 +185,17 @@ def _generate_artist_associations(entity: str, csv_columns: dict, policy: dict =
     if policy is None:
         policy = {}
     
-    if "artist-associations" not in policy:
-        raise ValueError(f"Association data found for {entity} but no 'artist-associations' policy defined. Define a policy or remove association data from CSV.")
+    if entity not in policy:
+        raise ValueError(f"Association data found for {entity} but no policy defined for {entity}. Define a policy or remove association data from CSV.")
     
-    if entity not in policy["artist-associations"]:
-        raise ValueError(f"Association data found for {entity} but no policy defined for {entity} in 'artist-associations'. Define a policy for {entity} or remove association data from CSV.")
+    if "artists" not in policy[entity]:
+        raise ValueError(f"Association data found for {entity} but no 'artists' policy defined for {entity}. Define a policy for {entity}.artists or remove association data from CSV.")
     
-    association_policy = policy["artist-associations"][entity]
+    association_policy = policy[entity]["artists"]
     
     # Generate SQL based on policy
-    if association_policy == 'replace':
-        # Replace: Delete all existing associations and insert new ones from CSV
+    if association_policy == 'prefer_incoming':
+        # prefer_incoming: Delete all existing associations and insert new ones from CSV
         return f"""
 -- Delete all existing associations for this entity
 DELETE FROM {association_table} 
@@ -195,7 +248,7 @@ WHERE s.artist_spotify_uris IS NOT NULL
   AND existing.{entity_singular}_id IS NULL  -- Only add new associations
 """
     else:
-        raise ValueError(f"Unknown association policy: {association_policy} for entity {entity}. Use 'replace' or 'extend'.")
+        raise ValueError(f"Unknown association policy: {association_policy} for entity {entity}. Use 'prefer_incoming' or 'extend'.")
 
 
 def generate_merge_function(entity: str, csv_columns: dict, policy: dict):
@@ -213,10 +266,11 @@ def generate_merge_function(entity: str, csv_columns: dict, policy: dict):
         if missing_artists_sql:
             sql_statements.append(missing_artists_sql)
         
-        # Step 3: Upsert the main entity
+        
+        # Step 4: Upsert the main entity
         sql_statements.append(generate_entity_upsert(entity, csv_columns, policy, source, timestamp))
         
-        # Step 4: Handle associations (if applicable)
+        # Step 5: Handle associations (if applicable)
         association_sql = generate_association_sql(entity, csv_columns, policy)
         if association_sql:
             sql_statements.append(association_sql)
@@ -227,66 +281,3 @@ def generate_merge_function(entity: str, csv_columns: dict, policy: dict):
     return merge_func
 
 
-def _generate_genre_associations(entity: str, csv_columns: dict, policy: dict = None) -> str:
-    """Generate genre association SQL for artists"""
-    
-    association_table = "artist_genres"
-    
-    # Check if policy exists for genre associations
-    if policy is None:
-        policy = {}
-    
-    if "genre-associations" not in policy:
-        raise ValueError(f"Genre data found for {entity} but no 'genre-associations' policy defined. Define a policy or remove genre data from CSV.")
-    
-    if entity not in policy["genre-associations"]:
-        raise ValueError(f"Genre data found for {entity} but no policy defined for {entity} in 'genre-associations'. Define a policy for {entity} or remove genre data from CSV.")
-    
-    association_policy = policy["genre-associations"][entity]
-    
-    # Generate SQL based on policy
-    if association_policy == 'replace':
-        # Replace: Delete all existing genre associations and insert new ones from CSV
-        return f"""
--- Delete existing genre associations for artists being updated
-DELETE FROM {association_table} 
-WHERE artist_id IN (
-    SELECT a.id FROM staging_artists s
-    JOIN artists a ON a.spotify_uri = s.spotify_uri
-    WHERE s.genres IS NOT NULL AND s.genres != ''
-);
-
--- Insert new genre associations from CSV
-INSERT INTO {association_table} (artist_id, genre_id)
-SELECT DISTINCT 
-    a.id,
-    g.id
-FROM staging_artists s
-JOIN artists a ON a.spotify_uri = s.spotify_uri  
-CROSS JOIN LATERAL (
-    SELECT unnest(string_to_array(s.genres, ',')) as genre_name
-) as genre_pos
-JOIN genres g ON TRIM(g.name) = TRIM(genre_pos.genre_name)
-WHERE s.genres IS NOT NULL 
-  AND s.genres != ''
-"""
-    elif association_policy == 'extend':
-        # Extend: Keep existing associations, only add new ones
-        return f"""
-INSERT INTO {association_table} (artist_id, genre_id)
-SELECT DISTINCT 
-    a.id,
-    g.id
-FROM staging_artists s
-JOIN artists a ON a.spotify_uri = s.spotify_uri  
-CROSS JOIN LATERAL (
-    SELECT unnest(string_to_array(s.genres, ',')) as genre_name
-) as genre_pos
-JOIN genres g ON TRIM(g.name) = TRIM(genre_pos.genre_name)
-LEFT JOIN {association_table} existing ON existing.artist_id = a.id AND existing.genre_id = g.id
-WHERE s.genres IS NOT NULL 
-  AND s.genres != ''
-  AND existing.artist_id IS NULL  -- Only add new associations
-"""
-    else:
-        raise ValueError(f"Unknown association policy: {association_policy} for entity {entity}. Use 'replace' or 'extend'.")
