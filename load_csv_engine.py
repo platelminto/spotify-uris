@@ -171,36 +171,44 @@ class CSVLoader:
                 rows_in_staging = staging_result[0] if staging_result else 0
                 print(f"[DEBUG] Copied {rows_in_staging:,} → {staging_table}")
 
-                # Analyze staging vs main before merge
-                from stats.staging_stats import analyze_staging_vs_main
-                print("[DEBUG] Analyzing staging vs main before merge...")
-                analyze_staging_vs_main(conn, entity, self.csv_columns, self.policy)
+                # Start transaction for merge with stats analysis
+                conn.execute("BEGIN")
                 
-                # Confirm before proceeding with merge
-                response = input("\nProceed with merge? (y/N): ").strip().lower()
-                if response not in ['y', 'yes']:
-                    print("Merge cancelled.")
-                    return
+                try:
+                    # Run merge with stats analysis (but don't auto-rollback)
+                    from stats.dry_run_stats import analyze_staging_vs_main_with_merge
+                    print("[DEBUG] Running merge with stats analysis...")
+                    merge_sql = merge_func(self.source_name, self.timestamp.isoformat())
+                    analyze_staging_vs_main_with_merge(conn, entity, self.csv_columns, self.policy, merge_sql, self.source_name)
+                    
+                    # User decides: commit or rollback
+                    response = input("\nCommit merge? (y/N): ").strip().lower()
+                    if response in ['y', 'yes']:
+                        # Count after merge but before commit
+                        after_result = conn.execute(f"SELECT count(*) FROM {entity}").fetchone()
+                        after = after_result[0] if after_result else 0
+                        
+                        conn.execute("COMMIT")
+                        elapsed = time.time() - t0
+                        print("✓ Merge committed!")
+                        print(
+                            f"✓ {self.csv_path.name}: +{after-before:,} rows | {elapsed:.1f}s | source '{self.source_name}'"
+                        )
+                    else:
+                        conn.execute("ROLLBACK")
+                        elapsed = time.time() - t0
+                        print("✗ Merge rolled back.")
+                        print(f"✓ {self.csv_path.name}: staging loaded, merge cancelled | {elapsed:.1f}s")
+                        return
+                        
+                except Exception as e:
+                    conn.execute("ROLLBACK")
+                    print(f"[ERROR] Merge failed and rolled back: {type(e).__name__}: {e}")
+                    raise
 
             except Exception as e:
                 print(f"[ERROR] COPY failed: {type(e).__name__}: {e}")
                 raise
-
-            # Execute merge SQL (can be single statement or list)
-            merge_sql = merge_func(self.source_name, self.timestamp.isoformat())
-
-            for sql in merge_sql:
-                conn.execute(sql)
-
-            # Count after
-            after_result = conn.execute(f"SELECT count(*) FROM {entity}").fetchone()
-            after = after_result[0] if after_result else 0
-
-            conn.commit()
-            elapsed = time.time() - t0
-            print(
-                f"✓ {self.csv_path.name}: +{after-before:,} rows | {elapsed:.1f}s | source '{self.source_name}'"
-            )
 
 
 if __name__ == "__main__":

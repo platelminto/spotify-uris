@@ -1,13 +1,6 @@
 #!/usr/bin/env python
-"""
-Convert MPD JSON files to CSV - Simple pandas version
-
-Much simpler than the original! Just read all JSON, convert to DataFrames,
-deduplicate, and save. Pandas handles all the complexity.
-"""
 
 import json
-import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 import csv

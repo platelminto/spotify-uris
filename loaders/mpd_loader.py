@@ -40,6 +40,6 @@ POLICY = {
         "name": "prefer_incoming",
         "spotify_uri": "prefer_non_null",
         "duration_ms": "prefer_non_null",
-        "artists": "extend",
+        "artists": "prefer_non_null",
     },
 }

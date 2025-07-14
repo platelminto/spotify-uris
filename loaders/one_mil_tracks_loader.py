@@ -24,8 +24,8 @@ POLICY = {
         "genres": "extend",
     },
     "tracks": {
-        "spotify_uri": "prefer_incoming",
-        "name": "prefer_non_null",
+        "spotify_uri": "prefer_non_null",
+        "name": "prefer_incoming",
         "duration_ms": "prefer_incoming",
         "artists": "prefer_non_null",
     },
