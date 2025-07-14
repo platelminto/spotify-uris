@@ -29,7 +29,7 @@ class StagingAnalyzer:
         
         # Add side effect analysis
         stats['side_effect_creation'] = self.side_effect_analyzer.analyze_all()
-        
+
         return stats
     
     def print_report(self, stats: Dict[str, Any]):

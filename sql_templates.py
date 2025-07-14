@@ -69,34 +69,65 @@ def generate_entity_upsert(entity: str, csv_columns: dict, policy: dict, source:
     
     upd = build_set(entity, updatable_cols, source, timestamp, csv_columns, policy)
     
-    # Build column lists dynamically
-    insert_cols = ["spotify_uri", "name", "source_name", "ingested_at"]
-    insert_vals = ["s.spotify_uri", "s.name", f"'{source}'", f"'{timestamp}'::timestamptz"]
+    # Build column lists dynamically - start with required metadata
+    insert_cols = ["source_name", "ingested_at"]
+    insert_vals = [f"'{source}'", f"'{timestamp}'::timestamptz"]
+    
+    # Add ID columns that exist in CSV (at least one of spotify_uri or mbid must exist)
+    if "spotify_uri" in csv_columns[entity]:
+        insert_cols.insert(0, "spotify_uri")
+        insert_vals.insert(0, "s.spotify_uri")
+    if "mbid" in csv_columns[entity]:
+        insert_cols.insert(-2, "mbid")  # Insert before source_name
+        insert_vals.insert(-2, "s.mbid")
+    
+    # Add name column only if it exists in CSV
+    if "name" in csv_columns[entity]:
+        insert_cols.insert(-2, "name")  # Insert before source_name
+        insert_vals.insert(-2, "s.name")
     
     # Add optional columns that exist in CSV
     for col in updatable_cols:
-        if col not in ["spotify_uri", "name"]:  # Skip already added core columns
+        if col not in ["spotify_uri", "mbid", "name"]:  # Skip already added core columns
             if col in csv_columns[entity]:
                 insert_cols.append(col)
                 insert_vals.append(f"s.{col}")
     
     # Special handling for tracks (need album_id)
     if entity == "tracks":
-        insert_cols.append("album_id")
-        insert_vals.append("al.id")
-        from_clause = """
+        # Only add album_id if we have album_spotify_uri in CSV
+        if "album_spotify_uri" in csv_columns[entity]:
+            insert_cols.append("album_id")
+            insert_vals.append("al.id")
+            from_clause = """
 FROM staging_tracks s
 LEFT JOIN albums al ON al.spotify_uri = s.album_spotify_uri"""
+        else:
+            from_clause = f"\nFROM staging_{entity} s"
     else:
         from_clause = f"\nFROM staging_{entity} s"
     
-    # No WHERE clause needed - prefer_non_null logic is handled in the SET clause itself
+    # Build WHERE clause based on available ID columns
+    where_conditions = []
+    if "spotify_uri" in csv_columns[entity]:
+        where_conditions.append("s.spotify_uri IS NOT NULL")
+    if "mbid" in csv_columns[entity]:
+        where_conditions.append("s.mbid IS NOT NULL")
+    where_clause = f"WHERE ({' OR '.join(where_conditions)})" if where_conditions else ""
+    
+    # Build ON CONFLICT clause based on available ID columns
+    if "spotify_uri" in csv_columns[entity]:
+        conflict_clause = f"ON CONFLICT (spotify_uri) DO UPDATE SET {upd}"
+    elif "mbid" in csv_columns[entity]:
+        conflict_clause = f"ON CONFLICT (mbid) DO UPDATE SET {upd}"
+    else:
+        raise ValueError(f"No ID columns (spotify_uri or mbid) found for entity {entity}")
     
     return f"""
 INSERT INTO {entity} ({', '.join(insert_cols)})
 SELECT DISTINCT {', '.join(insert_vals)}{from_clause}
-WHERE s.spotify_uri IS NOT NULL
-ON CONFLICT (spotify_uri) DO UPDATE SET {upd}
+{where_clause}
+{conflict_clause}
 """
 
 
@@ -237,8 +268,30 @@ WHERE s.artist_spotify_uris IS NOT NULL
   AND s.artist_spotify_uris != ''
   AND existing.{entity_singular}_id IS NULL  -- Only add new associations
 """
+    elif association_policy == 'prefer_non_null':
+        # prefer_non_null: Only add associations if the entity has no existing associations
+        return f"""
+INSERT INTO {association_table} ({entity_singular}_id, artist_id, position)
+SELECT DISTINCT 
+    e.id,
+    ar.id,
+    artist_pos.pos - 1 as position
+FROM staging_{entity} s
+JOIN {entity} e ON e.spotify_uri = s.spotify_uri  
+CROSS JOIN LATERAL (
+    SELECT unnest(string_to_array(replace(s.artist_spotify_uris, '"', ''), ',')) as artist_uri,
+           generate_series(1, array_length(string_to_array(replace(s.artist_spotify_uris, '"', ''), ','), 1)) as pos
+) as artist_pos
+JOIN artists ar ON ar.spotify_uri = artist_pos.artist_uri
+WHERE s.artist_spotify_uris IS NOT NULL 
+  AND s.artist_spotify_uris != ''
+  AND NOT EXISTS (
+    SELECT 1 FROM {association_table} existing 
+    WHERE existing.{entity_singular}_id = e.id
+  )  -- Only add if no existing associations
+"""
     else:
-        raise ValueError(f"Unknown association policy: {association_policy} for entity {entity}. Use 'prefer_incoming' or 'extend'.")
+        raise ValueError(f"Unknown association policy: {association_policy} for entity {entity}. Use 'prefer_incoming', 'extend', or 'prefer_non_null'.")
 
 
 def generate_merge_function(entity: str, csv_columns: dict, policy: dict):

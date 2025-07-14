@@ -9,7 +9,7 @@ DB_NAME = "music"
 PG_USER = "postgres"
 PG_PASSWORD = "pw"
 PG_HOST = "localhost"
-BACKUP_FILE = "backups/music-data-20250712-215407.backup"
+BACKUP_FILE = "backups/music-data-20250714-031843.backup"
 
 def terminate_connections(dbname):
     print(f"Terminating active connections to '{dbname}'...")

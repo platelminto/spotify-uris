@@ -40,41 +40,74 @@ class EntityStatsAnalyzer:
         return result[0] if result else 0
         
     def _count_new_rows(self) -> int:
-        """Count rows in staging that don't exist in main (by spotify_uri)"""
-        if 'spotify_uri' not in self.csv_columns:
+        """Count rows in staging that don't exist in main (by spotify_uri or mbid)"""
+        # Determine which ID column(s) are available
+        id_columns = []
+        join_conditions = []
+        where_conditions = []
+        
+        if 'spotify_uri' in self.csv_columns:
+            id_columns.append('spotify_uri')
+            join_conditions.append('m.spotify_uri = s.spotify_uri')
+            where_conditions.append('m.spotify_uri IS NULL')
+        if 'mbid' in self.csv_columns:
+            id_columns.append('mbid')
+            join_conditions.append('m.mbid = s.mbid')
+            where_conditions.append('m.mbid IS NULL')
+            
+        if not id_columns:
             return 0
+            
+        # Use first available ID column for the join
+        join_condition = join_conditions[0]
+        where_condition = where_conditions[0]
             
         sql = f"""
         SELECT COUNT(*)
         FROM {self.staging_table} s
-        LEFT JOIN {self.entity} m ON m.spotify_uri = s.spotify_uri
-        WHERE m.spotify_uri IS NULL
+        LEFT JOIN {self.entity} m ON {join_condition}
+        WHERE {where_condition}
         """
         result = self.conn.execute(sql).fetchone()
         return result[0] if result else 0
         
     def _count_existing_rows(self) -> int:
-        """Count rows in staging that already exist in main (by spotify_uri)"""
-        if 'spotify_uri' not in self.csv_columns:
+        """Count rows in staging that already exist in main (by spotify_uri or mbid)"""
+        # Determine which ID column is available
+        if 'spotify_uri' in self.csv_columns:
+            join_condition = 'm.spotify_uri = s.spotify_uri'
+        elif 'mbid' in self.csv_columns:
+            join_condition = 'm.mbid = s.mbid'
+        else:
             return 0
             
         sql = f"""
         SELECT COUNT(*)
         FROM {self.staging_table} s
-        INNER JOIN {self.entity} m ON m.spotify_uri = s.spotify_uri
+        INNER JOIN {self.entity} m ON {join_condition}
         """
         result = self.conn.execute(sql).fetchone()
         return result[0] if result else 0
         
     def _count_updates_needed(self) -> int:
         """Count existing rows that need updates (have different values and policy allows updates)"""
-        if 'spotify_uri' not in self.csv_columns or not self.comparable_columns:
+        # Determine which ID column is available for joining
+        if 'spotify_uri' in self.csv_columns:
+            join_condition = 'm.spotify_uri = s.spotify_uri'
+            join_key = 'spotify_uri'
+        elif 'mbid' in self.csv_columns:
+            join_condition = 'm.mbid = s.mbid'
+            join_key = 'mbid'
+        else:
+            return 0
+            
+        if not self.comparable_columns:
             return 0
             
         # Build comparison conditions for each comparable column
         conditions = []
         for col in self.comparable_columns:
-            if col != 'spotify_uri':  # Skip the join key
+            if col != join_key:  # Skip the join key
                 # Special handling for array columns to ensure proper type casting
                 if col == 'genres':
                     conditions.append(f"s.{col}::text[] IS DISTINCT FROM m.{col}::text[]")
@@ -94,7 +127,7 @@ class EntityStatsAnalyzer:
         sql = f"""
         SELECT COUNT(*)
         FROM {self.staging_table} s
-        INNER JOIN {self.entity} m ON m.spotify_uri = s.spotify_uri
+        INNER JOIN {self.entity} m ON {join_condition}
         WHERE {where_clause}
         """
         result = self.conn.execute(sql).fetchone()
@@ -112,14 +145,24 @@ class EntityStatsAnalyzer:
 
     def _analyze_column_changes(self) -> Dict[str, int]:
         """Analyze changes at the column level (respecting policy)"""
-        if 'spotify_uri' not in self.csv_columns or not self.comparable_columns:
+        # Determine which ID column is available for joining
+        if 'spotify_uri' in self.csv_columns:
+            join_condition = 'm.spotify_uri = s.spotify_uri'
+            join_key = 'spotify_uri'
+        elif 'mbid' in self.csv_columns:
+            join_condition = 'm.mbid = s.mbid'
+            join_key = 'mbid'
+        else:
+            return {}
+            
+        if not self.comparable_columns:
             return {}
             
         column_stats = {}
         policy_where = self._build_policy_where_clause()
         
         for col in self.comparable_columns:
-            if col == 'spotify_uri':  # Skip the join key
+            if col == join_key:  # Skip the join key
                 continue
             
             # Special handling for array columns to ensure proper type casting
@@ -133,7 +176,7 @@ class EntityStatsAnalyzer:
             sql = f"""
             SELECT COUNT(*)
             FROM {self.staging_table} s
-            INNER JOIN {self.entity} m ON m.spotify_uri = s.spotify_uri
+            INNER JOIN {self.entity} m ON {join_condition}
             WHERE {where_clause}
             """
             result = self.conn.execute(sql).fetchone()

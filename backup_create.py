@@ -25,5 +25,5 @@ def create_backup(backup_name=DEFAULT_BACKUP_NAME):
 
 
 if __name__ == "__main__":
-    backup_name = "pre-6.6mil"
+    backup_name = "" or DEFAULT_BACKUP_NAME
     create_backup(backup_name)

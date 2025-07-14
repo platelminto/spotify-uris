@@ -1,6 +1,8 @@
 import pandas as pd
 import os
 
+from data_to_csv.db_utils import convert_json_array_to_postgres_array
+
 
 def process_artist_csv():
     """Read Artist-Genres-URIs.csv, remove first column, save to csvs/6mil/artists.csv"""
@@ -28,28 +30,7 @@ def process_artist_csv():
         
         # Convert JSON array format to PostgreSQL array format
         if 'genres' in chunk.columns:
-            import re
-            def convert_array(val):
-                if pd.isna(val) or val == '[]':
-                    return '{}'
-                # Remove outer brackets and convert to PostgreSQL format
-                val = str(val)
-                if val.startswith('[') and val.endswith(']'):
-                    # Extract content between brackets
-                    content = val[1:-1]
-                    # Split by comma and clean up quotes
-                    items = re.split(r',\s*', content)
-                    cleaned_items = []
-                    for item in items:
-                        # Remove surrounding quotes (both ' and ")
-                        item = item.strip()
-                        if (item.startswith("'") and item.endswith("'")) or (item.startswith('"') and item.endswith('"')):
-                            item = item[1:-1]
-                        cleaned_items.append(item)
-                    return '{' + ','.join(cleaned_items) + '}'
-                return val
-            
-            chunk['genres'] = chunk['genres'].apply(convert_array)
+            chunk['genres'] = chunk['genres'].apply(convert_json_array_to_postgres_array)
 
         # Write to CSV
         if first_chunk:

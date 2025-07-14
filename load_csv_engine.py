@@ -204,9 +204,9 @@ class CSVLoader:
 
 
 if __name__ == "__main__":
-    from loaders import six_mil_loader as loader
+    from loaders import one_mil_tracks_loader as loader
 
-    entity = "artists"
+    entity = "tracks"
 
     csv_loader = CSVLoader(
         entity=entity,
