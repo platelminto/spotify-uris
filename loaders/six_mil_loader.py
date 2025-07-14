@@ -4,6 +4,8 @@
 Simple configuration using reusable SQL templates.
 """
 
+SOURCE_URL = "https://www.kaggle.com/datasets/toluwafayemi/66m-spotify-artists"
+
 SOURCE_NAME = "6mil"
 
 CSV_PATHS = {

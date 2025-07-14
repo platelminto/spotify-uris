@@ -4,6 +4,8 @@ mpd_loader.py - Configuration for loading MPD (Million Playlist Dataset) CSV fil
 Simple configuration using reusable SQL templates.
 """
 
+SOURCE_URL = "https://www.kaggle.com/datasets/himanshuwagh/spotify-million"
+
 SOURCE_NAME = "MPD"
 
 CSV_PATHS = {
