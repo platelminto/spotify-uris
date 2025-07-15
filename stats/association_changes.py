@@ -7,6 +7,118 @@ Analyzes what association changes will happen by comparing staging vs pre-merge 
 from typing import Dict, List, Any
 
 
+def analyze_association_changes_with_comparison(conn, entity: str, csv_columns: Dict[str, List[str]], policy: Dict = None) -> tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Analyze association changes and return both current policy results and policy comparison"""
+    
+    # Get current policy results
+    current_changes = analyze_association_changes(conn, entity, csv_columns, policy)
+    
+    # Calculate comparison for all three policies
+    comparison = {}
+    if entity in ["albums", "tracks"] and "artist_spotify_uris" in csv_columns.get(entity, []):
+        for policy_type in ['extend', 'prefer_incoming', 'prefer_non_null']:
+            # Create temporary policy for comparison
+            temp_policy = {entity: {'artists': policy_type}}
+            result = analyze_association_changes(conn, entity, csv_columns, temp_policy)
+            if result:
+                comparison[policy_type] = result[0]  # analyze_association_changes returns a list
+                comparison[policy_type]['policy_type'] = policy_type
+                # Add net_change calculation
+                comparison[policy_type]['net_change'] = (
+                    comparison[policy_type]['new_associations'] - 
+                    comparison[policy_type]['deleted_associations']
+                )
+    
+    # Add change distribution analysis for current policy
+    change_distribution = {}
+    if current_changes:
+        change_distribution = _analyze_artist_change_distribution(conn, entity, csv_columns, policy)
+    
+    return current_changes, comparison, change_distribution
+
+
+def _analyze_artist_change_distribution(conn, entity: str, csv_columns: Dict[str, List[str]], policy: Dict = None) -> Dict[str, Any]:
+    """Analyze how many artists each entity gains/loses/keeps"""
+    if entity not in ["albums", "tracks"] or "artist_spotify_uris" not in csv_columns.get(entity, []):
+        return {}
+    
+    entity_singular = entity[:-1]
+    artist_policy = policy.get(entity, {}).get('artists', 'prefer_incoming') if policy else 'prefer_incoming'
+    
+    # Query to get current and new artist counts per entity
+    query = f"""
+    WITH current_counts AS (
+        SELECT e.spotify_uri, COUNT(ta.artist_id) as current_count
+        FROM {entity} e
+        LEFT JOIN {entity_singular}_artists ta ON e.id = ta.{entity_singular}_id
+        WHERE e.spotify_uri IN (SELECT spotify_uri FROM staging_{entity})
+        GROUP BY e.spotify_uri
+    ),
+    new_counts AS (
+        SELECT s.spotify_uri, COUNT(DISTINCT artist_pos.artist_uri) as new_count
+        FROM staging_{entity} s
+        CROSS JOIN LATERAL (
+            SELECT unnest(string_to_array(trim(both '{{}}' from s.artist_spotify_uris), ',')) as artist_uri
+        ) as artist_pos
+        WHERE s.artist_spotify_uris IS NOT NULL 
+          AND s.artist_spotify_uris != ''
+          AND artist_pos.artist_uri IS NOT NULL
+          AND artist_pos.artist_uri != ''
+        GROUP BY s.spotify_uri
+    ),
+    effective_counts AS (
+        SELECT 
+            COALESCE(cc.spotify_uri, nc.spotify_uri) as spotify_uri,
+            COALESCE(cc.current_count, 0) as current_count,
+            COALESCE(nc.new_count, 0) as new_count,
+            CASE 
+                WHEN '{artist_policy}' = 'prefer_non_null' AND COALESCE(cc.current_count, 0) > 0 
+                THEN COALESCE(cc.current_count, 0)  -- Keep current if exists
+                WHEN '{artist_policy}' = 'extend' 
+                THEN GREATEST(COALESCE(cc.current_count, 0), COALESCE(nc.new_count, 0))  -- Take max
+                ELSE COALESCE(nc.new_count, 0)  -- prefer_incoming: use new
+            END as effective_count
+        FROM current_counts cc
+        FULL OUTER JOIN new_counts nc ON cc.spotify_uri = nc.spotify_uri
+    )
+    SELECT 
+        CASE 
+            WHEN effective_count > current_count THEN 'gaining'
+            WHEN effective_count < current_count THEN 'losing'
+            ELSE 'same'
+        END as change_type,
+        effective_count - current_count as net_change,
+        COUNT(*) as entity_count
+    FROM effective_counts
+    GROUP BY change_type, net_change
+    ORDER BY change_type, net_change
+    """
+    
+    try:
+        results = conn.execute(query).fetchall()
+        
+        distribution = {
+            'gaining': {},  # {1: 1234, 2: 567, 3: 89} = 1234 entities gained 1 artist, etc
+            'losing': {},   # {-1: 234, -2: 56} = 234 entities lost 1 artist, etc  
+            'same': 0       # count of entities with no change
+        }
+        
+        for row in results:
+            change_type, net_change, entity_count = row
+            if change_type == 'gaining' and net_change > 0:
+                distribution['gaining'][net_change] = entity_count
+            elif change_type == 'losing' and net_change < 0:
+                distribution['losing'][abs(net_change)] = entity_count
+            elif change_type == 'same':
+                distribution['same'] = entity_count
+        
+        return distribution
+        
+    except Exception as e:
+        print(f"[DEBUG] Artist change distribution analysis failed: {e}")
+        return {}
+
+
 def analyze_association_changes(conn, entity: str, csv_columns: Dict[str, List[str]], policy: Dict = None) -> List[Dict[str, Any]]:
     """Analyze association table changes using pre-merge comparison"""
     if entity not in ["albums", "tracks"]:
@@ -33,7 +145,7 @@ def analyze_association_changes(conn, entity: str, csv_columns: Dict[str, List[s
     SELECT DISTINCT s.spotify_uri, artist_pos.artist_uri
     FROM staging_{entity} s
     CROSS JOIN LATERAL (
-        SELECT unnest(string_to_array(replace(s.artist_spotify_uris, '"', ''), ',')) as artist_uri
+        SELECT unnest(string_to_array(trim(both '{{}}' from s.artist_spotify_uris), ',')) as artist_uri
     ) as artist_pos
     WHERE s.artist_spotify_uris IS NOT NULL 
       AND s.artist_spotify_uris != ''

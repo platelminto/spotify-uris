@@ -36,9 +36,15 @@ def build_set(
         if col in csv_cols:  # Only if column exists in CSV
             mode = policy.get(col, "prefer_incoming")
             if mode == "prefer_incoming":
-                parts.append(f"{col}=EXCLUDED.{col}")
+                if col == "release_date_precision":
+                    parts.append(f"{col}=EXCLUDED.{col}::dateprecision")
+                else:
+                    parts.append(f"{col}=EXCLUDED.{col}")
             elif mode == "prefer_non_null":
-                parts.append(f"{col}=CASE WHEN {entity}.{col} IS NOT NULL THEN {entity}.{col} ELSE EXCLUDED.{col} END")
+                if col == "release_date_precision":
+                    parts.append(f"{col}=CASE WHEN {entity}.{col} IS NOT NULL THEN {entity}.{col} ELSE EXCLUDED.{col}::dateprecision END")
+                else:
+                    parts.append(f"{col}=CASE WHEN {entity}.{col} IS NOT NULL THEN {entity}.{col} ELSE EXCLUDED.{col} END")
             elif mode == "prefer_longer":
                 parts.append(
                     f"{col}=CASE WHEN length(EXCLUDED.{col})>length({entity}.{col}) "
@@ -91,7 +97,11 @@ def generate_entity_upsert(entity: str, csv_columns: dict, policy: dict, source:
         if col not in ["spotify_uri", "mbid", "name"]:  # Skip already added core columns
             if col in csv_columns[entity]:
                 insert_cols.append(col)
-                insert_vals.append(f"s.{col}")
+                # Special casting for enum fields
+                if col == "release_date_precision":
+                    insert_vals.append(f"s.{col}::dateprecision")
+                else:
+                    insert_vals.append(f"s.{col}")
     
     # Special handling for tracks (need album_id)
     if entity == "tracks":
@@ -149,7 +159,7 @@ SELECT DISTINCT
     '{timestamp}'::timestamptz as ingested_at
 FROM staging_{entity} s
 CROSS JOIN LATERAL (
-    SELECT unnest(string_to_array(replace(s.artist_spotify_uris, '"', ''), ',')) as artist_uri
+    SELECT unnest(string_to_array(trim(both '{{}}' from s.artist_spotify_uris), ',')) as artist_uri
 ) as artist_pos
 LEFT JOIN artists existing ON existing.spotify_uri = artist_pos.artist_uri
 WHERE s.artist_spotify_uris IS NOT NULL 
@@ -235,8 +245,8 @@ SELECT DISTINCT
 FROM staging_{entity} s
 JOIN {entity} e ON e.spotify_uri = s.spotify_uri  
 CROSS JOIN LATERAL (
-    SELECT unnest(string_to_array(replace(s.artist_spotify_uris, '"', ''), ',')) as artist_uri,
-           generate_series(1, array_length(string_to_array(replace(s.artist_spotify_uris, '"', ''), ','), 1)) as pos
+    SELECT unnest(string_to_array(trim(both '{{}}' from s.artist_spotify_uris), ',')) as artist_uri,
+           generate_series(1, array_length(string_to_array(trim(both '{{}}' from s.artist_spotify_uris), ','), 1)) as pos
 ) as artist_pos
 JOIN artists ar ON ar.spotify_uri = artist_pos.artist_uri
 WHERE s.artist_spotify_uris IS NOT NULL 
@@ -254,8 +264,8 @@ SELECT DISTINCT
 FROM staging_{entity} s
 JOIN {entity} e ON e.spotify_uri = s.spotify_uri  
 CROSS JOIN LATERAL (
-    SELECT unnest(string_to_array(replace(s.artist_spotify_uris, '"', ''), ',')) as artist_uri,
-           generate_series(1, array_length(string_to_array(replace(s.artist_spotify_uris, '"', ''), ','), 1)) as pos
+    SELECT unnest(string_to_array(trim(both '{{}}' from s.artist_spotify_uris), ',')) as artist_uri,
+           generate_series(1, array_length(string_to_array(trim(both '{{}}' from s.artist_spotify_uris), ','), 1)) as pos
 ) as artist_pos
 JOIN artists ar ON ar.spotify_uri = artist_pos.artist_uri
 LEFT JOIN {association_table} existing ON existing.{entity_singular}_id = e.id AND existing.artist_id = ar.id
@@ -279,8 +289,8 @@ SELECT DISTINCT
 FROM staging_{entity} s
 JOIN {entity} e ON e.spotify_uri = s.spotify_uri  
 CROSS JOIN LATERAL (
-    SELECT unnest(string_to_array(replace(s.artist_spotify_uris, '"', ''), ',')) as artist_uri,
-           generate_series(1, array_length(string_to_array(replace(s.artist_spotify_uris, '"', ''), ','), 1)) as pos
+    SELECT unnest(string_to_array(trim(both '{{}}' from s.artist_spotify_uris), ',')) as artist_uri,
+           generate_series(1, array_length(string_to_array(trim(both '{{}}' from s.artist_spotify_uris), ','), 1)) as pos
 ) as artist_pos
 JOIN artists ar ON ar.spotify_uri = artist_pos.artist_uri
 WHERE s.artist_spotify_uris IS NOT NULL 

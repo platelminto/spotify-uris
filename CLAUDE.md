@@ -7,8 +7,7 @@
 
 ## Project Structure
 - `load_csv_engine.py`: Generic CSV loader with staging analysis
-- `staging_stats.py`: Analyzes staging vs main table differences
-- `mpd_loader.py`: Configuration for MPD dataset loading
+- `stats/dry_run_stats.py`: Analyzes db pre and post-merge with staging.
 - Entity tables: artists, albums, tracks
 - Association tables: album_artists, track_artists
 - For an idea of the db structure make sure to read `models.py` 
