@@ -12,6 +12,10 @@ def analyze_association_changes(conn, entity: str, csv_columns: Dict[str, List[s
     if entity not in ["albums", "tracks"]:
         return []
     
+    # Check if artist_spotify_uris column exists in CSV - if not, no association changes
+    if "artist_spotify_uris" not in csv_columns.get(entity, []):
+        return []
+    
     assoc_table = f"{entity[:-1]}_artists"
     entity_singular = entity[:-1]
     

@@ -94,7 +94,6 @@ def main():
                     albums_batch.append([
                         album_uri,
                         track["album_name"],
-                        track["artist_uri"]  # Single URI - will be comma-separated for multiple
                     ])
                 
                 # Extract track info

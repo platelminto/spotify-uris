@@ -212,7 +212,7 @@ class CSVLoader:
 
 
 if __name__ == "__main__":
-    from loaders import one_mil_tracks_loader as loader
+    from loaders import mpd_loader as loader
 
     entity = "tracks"
 

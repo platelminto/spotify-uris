@@ -17,7 +17,7 @@ CSV_PATHS = {
 # Define which columns are present in MPD CSV files
 CSV_COLUMNS = {
     "artists": ["spotify_uri", "name"],  # MPD format (no mbid, no genres)
-    "albums": ["spotify_uri", "name", "artist_spotify_uris"],
+    "albums": ["spotify_uri", "name"],
     "tracks": [
         "spotify_uri",
         "name",
@@ -36,7 +36,6 @@ POLICY = {
     "albums": {
         "name": "prefer_incoming",
         "spotify_uri": "prefer_non_null",
-        "artists": "extend"
     },
     "tracks": {
         "name": "prefer_incoming",
