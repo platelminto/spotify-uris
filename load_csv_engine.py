@@ -14,14 +14,14 @@ load_dotenv()
 
 # Define all possible columns for each entity (for the database tables)
 ALL_COLUMNS = {
-    "artists": {"spotify_uri": "text", "mbid": "text", "name": "citext", "genres": "text[]"},
+    "artists": {"spotify_uri": "text", "mbid": "text", "name": "citext", "genres": "character varying[]"},
     "albums": {
         "spotify_uri": "text",
         "mbid": "text",
         "name": "citext",
-        "album_type": "text",
+        "album_type": "albumtype",
         "spotify_release_date": "date",
-        "release_date_precision": "text",
+        "release_date_precision": "dateprecision",
         "n_tracks": "int",
     },
     "tracks": {
@@ -220,7 +220,7 @@ class CSVLoader:
 
 
 if __name__ == "__main__":
-    from loaders import one_mil_songs_loader as loader
+    from loaders import ten_mil_beatport_loader as loader
 
     entity = "tracks"
 

@@ -83,8 +83,7 @@ def analyze_column_changes(conn, entity: str, csv_columns: Dict[str, List[str]],
             continue
             
         if col in csv_columns[entity]:
-            # Handle enum type casting for release_date_precision
-            staging_col = f"s.{col}::dateprecision" if col == "release_date_precision" else f"s.{col}"
+            staging_col = f"s.{col}"
             
             if policy_type == 'prefer_incoming':
                 query = f"""

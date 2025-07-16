@@ -40,6 +40,9 @@ class DryRunStatsAnalyzer:
         t_elapsed = time.time() - t_start
         print(f"[DEBUG] [{time.strftime('%H:%M:%S', time.localtime())}] Association changes analysis took {t_elapsed:.2f}s")
 
+        # Count unique rows with column changes BEFORE merge
+        unique_rows_with_column_changes = self._count_unique_rows_with_column_changes(column_changes)
+        
         return {
             'staging_rows': staging_count,
             'main_rows': main_count,
@@ -47,6 +50,7 @@ class DryRunStatsAnalyzer:
             'entity': self.entity,
             'column_changes': column_changes,
             'column_comparison': column_comparison,
+            'unique_rows_with_column_changes': unique_rows_with_column_changes,
             'association_stats': association_stats,
             'association_comparison': association_comparison,
             'artist_change_distribution': artist_change_distribution
@@ -96,7 +100,8 @@ class DryRunStatsAnalyzer:
         existing_rows = stats['staging_rows'] - new_rows
         
         # Check if there are any changes (column changes or association changes)
-        column_updates = self._count_unique_rows_with_column_changes(stats.get('column_changes', {}))
+        # Use the pre-calculated unique row count (calculated before merge)
+        column_updates = stats.get('unique_rows_with_column_changes', 0)
         association_updates = 0
         if stats.get('changes', {}).get(f"{self.entity[:-1]}_artists", 0) != 0:
             association_updates = existing_rows  # If associations changed, all existing rows with associations are "updated"
@@ -170,11 +175,13 @@ class DryRunStatsAnalyzer:
                     conditions.append("(m.album_id IS NULL AND al.id IS NOT NULL)")
                 continue
                 
-            if col in self.csv_columns[self.entity] and col in column_changes:
+            if col in self.csv_columns[self.entity]:
                 if policy_type == 'prefer_incoming':
                     conditions.append(f"s.{col} IS DISTINCT FROM m.{col}")
                 elif policy_type == 'prefer_non_null':
-                    conditions.append(f"(m.{col} IS NULL AND s.{col} IS NOT NULL)")
+                    # Skip prefer_non_null conditions for columns used in JOIN (they can't be NULL after JOIN)
+                    if col != 'spotify_uri':
+                        conditions.append(f"(m.{col} IS NULL AND s.{col} IS NOT NULL)")
         
         if not conditions:
             return 0

@@ -36,15 +36,9 @@ def build_set(
         if col in csv_cols:  # Only if column exists in CSV
             mode = policy.get(col, "prefer_incoming")
             if mode == "prefer_incoming":
-                if col == "release_date_precision":
-                    parts.append(f"{col}=EXCLUDED.{col}::dateprecision")
-                else:
-                    parts.append(f"{col}=EXCLUDED.{col}")
+                parts.append(f"{col}=EXCLUDED.{col}")
             elif mode == "prefer_non_null":
-                if col == "release_date_precision":
-                    parts.append(f"{col}=CASE WHEN {entity}.{col} IS NOT NULL THEN {entity}.{col} ELSE EXCLUDED.{col}::dateprecision END")
-                else:
-                    parts.append(f"{col}=CASE WHEN {entity}.{col} IS NOT NULL THEN {entity}.{col} ELSE EXCLUDED.{col} END")
+                parts.append(f"{col}=CASE WHEN {entity}.{col} IS NOT NULL THEN {entity}.{col} ELSE EXCLUDED.{col} END")
             elif mode == "prefer_longer":
                 parts.append(
                     f"{col}=CASE WHEN length(EXCLUDED.{col})>length({entity}.{col}) "
@@ -53,6 +47,15 @@ def build_set(
             elif mode == "extend" and col == "genres":
                 # Special handling for genres array - extend means merge arrays
                 parts.append(f"{col}=COALESCE({entity}.{col}, ARRAY[]::text[]) || COALESCE(EXCLUDED.{col}, ARRAY[]::text[])")
+    
+    # Special handling for tracks: if album_spotify_uri exists in CSV, update album_id
+    if entity == "tracks" and "album_spotify_uri" in csv_cols:
+        album_policy = policy.get("album_spotify_uri", "prefer_incoming")
+        if album_policy == "prefer_incoming":
+            parts.append("album_id=EXCLUDED.album_id")
+        elif album_policy == "prefer_non_null":
+            parts.append("album_id=CASE WHEN tracks.album_id IS NOT NULL THEN tracks.album_id ELSE EXCLUDED.album_id END")
+    
     parts.append(f"source_name='{source}'")
     parts.append(f"ingested_at='{timestamp}'")
     return ", ".join(parts)
@@ -97,11 +100,7 @@ def generate_entity_upsert(entity: str, csv_columns: dict, policy: dict, source:
         if col not in ["spotify_uri", "mbid", "name"]:  # Skip already added core columns
             if col in csv_columns[entity]:
                 insert_cols.append(col)
-                # Special casting for enum fields
-                if col == "release_date_precision":
-                    insert_vals.append(f"s.{col}::dateprecision")
-                else:
-                    insert_vals.append(f"s.{col}")
+                insert_vals.append(f"s.{col}")
     
     # Special handling for tracks (need album_id)
     if entity == "tracks":
