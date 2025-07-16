@@ -10,11 +10,14 @@ from typing import Dict, List
 def analyze_column_changes_with_comparison(conn, entity: str, csv_columns: Dict[str, List[str]], policy: Dict) -> tuple[Dict[str, int], Dict[str, Dict[str, int]]]:
     """Analyze column changes and return both current policy results and policy comparison"""
     
-    # Get current policy results
-    current_changes = analyze_column_changes(conn, entity, csv_columns, policy)
+    # Fail fast if policy is invalid
+    if not policy or entity not in policy:
+        raise ValueError(f"Policy for {entity} not found in policy: {policy}")
     
     # Calculate comparison for all columns in CSV
     comparison = {}
+    current_changes = {}
+    
     for col in csv_columns.get(entity, []):
         if col in ['artists', 'artist_spotify_uris']:
             continue
@@ -27,6 +30,12 @@ def analyze_column_changes_with_comparison(conn, entity: str, csv_columns: Dict[
             'prefer_non_null': analyze_column_changes(conn, entity, csv_columns, prefer_non_null_policy).get(col, 0),
             'prefer_incoming': analyze_column_changes(conn, entity, csv_columns, prefer_incoming_policy).get(col, 0)
         }
+        
+        # Extract current policy results if this column is in the policy
+        if col in policy[entity]:
+            current_policy_type = policy[entity][col]
+            if current_policy_type in comparison[col]:
+                current_changes[col] = comparison[col][current_policy_type]
     
     return current_changes, comparison
 

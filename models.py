@@ -74,6 +74,7 @@ class Track(Base):
     name       = Column(String, nullable=True)                  # -> CITEXT later, NULL allowed for auto-created tracks
     duration_ms  = Column(Integer, nullable=True)
     explicit     = Column(Boolean, nullable=True)
+    isrc         = Column(String, nullable=True)
     source_name = Column(String)               # last feed that touched the row
     ingested_at = Column(DateTime)             # when it happened
     disc_number  = Column(Integer, nullable=True)

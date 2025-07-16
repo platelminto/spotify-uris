@@ -4,7 +4,7 @@ one_mil_songs_loader.py - Configuration for loading 1mil songs CSV files
 Simple configuration using reusable SQL templates.
 """
 
-SOURCE_URL = "https://www.kaggle.com/datasets/platelm/1-2-million-songs-with-audio-features"
+SOURCE_URL = "https://www.kaggle.com/datasets/rodolfofigueroa/spotify-12m-songs"
 
 SOURCE_NAME = "1mil_songs"
 

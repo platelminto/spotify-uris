@@ -10,12 +10,17 @@ from typing import Dict, List, Any
 def analyze_association_changes_with_comparison(conn, entity: str, csv_columns: Dict[str, List[str]], policy: Dict = None) -> tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """Analyze association changes and return both current policy results and policy comparison"""
     
-    # Get current policy results
-    current_changes = analyze_association_changes(conn, entity, csv_columns, policy)
-    
     # Calculate comparison for all three policies
     comparison = {}
+    current_changes = []
+    
     if entity in ["albums", "tracks"] and "artist_spotify_uris" in csv_columns.get(entity, []):
+        # Get current policy type - fail if not found
+        if not policy or entity not in policy or 'artists' not in policy[entity]:
+            raise ValueError(f"Policy for {entity}.artists not found in policy: {policy}")
+        
+        current_policy_type = policy[entity]['artists']
+        
         for policy_type in ['extend', 'prefer_incoming', 'prefer_non_null']:
             # Create temporary policy for comparison
             temp_policy = {entity: {'artists': policy_type}}
@@ -28,6 +33,10 @@ def analyze_association_changes_with_comparison(conn, entity: str, csv_columns: 
                     comparison[policy_type]['new_associations'] - 
                     comparison[policy_type]['deleted_associations']
                 )
+                
+                # Extract current policy results
+                if policy_type == current_policy_type:
+                    current_changes = result
     
     # Add change distribution analysis for current policy
     change_distribution = {}
@@ -121,6 +130,8 @@ def _analyze_artist_change_distribution(conn, entity: str, csv_columns: Dict[str
 
 def analyze_association_changes(conn, entity: str, csv_columns: Dict[str, List[str]], policy: Dict = None) -> List[Dict[str, Any]]:
     """Analyze association table changes using pre-merge comparison"""
+    import time
+    
     if entity not in ["albums", "tracks"]:
         return []
     
@@ -132,12 +143,13 @@ def analyze_association_changes(conn, entity: str, csv_columns: Dict[str, List[s
     entity_singular = entity[:-1]
     
     # Get current associations for entities in staging (before merge)
+    # Optimized: start with staging data and join outward
     current_assocs_query = f"""
-    SELECT DISTINCT e.spotify_uri, ar.spotify_uri as artist_uri
-    FROM {assoc_table} ta
-    JOIN {entity} e ON e.id = ta.{entity_singular}_id
+    SELECT DISTINCT s.spotify_uri, ar.spotify_uri as artist_uri
+    FROM staging_{entity} s
+    JOIN {entity} e ON e.spotify_uri = s.spotify_uri  
+    JOIN {assoc_table} ta ON ta.{entity_singular}_id = e.id
     JOIN artists ar ON ar.id = ta.artist_id
-    WHERE e.spotify_uri IN (SELECT spotify_uri FROM staging_{entity})
     """
     
     # Get new associations from staging data
@@ -154,10 +166,12 @@ def analyze_association_changes(conn, entity: str, csv_columns: Dict[str, List[s
     """
     
     try:
+        # Execute current associations query
         current_assocs = set()
         for row in conn.execute(current_assocs_query).fetchall():
             current_assocs.add((row[0], row[1]))
         
+        # Execute new associations query
         new_assocs = set()
         for row in conn.execute(new_assocs_query).fetchall():
             new_assocs.add((row[0], row[1]))
@@ -203,4 +217,4 @@ def analyze_association_changes(conn, entity: str, csv_columns: Dict[str, List[s
         
     except Exception as e:
         print(f"[DEBUG] Association analysis failed: {e}")
-        return []
+        raise e

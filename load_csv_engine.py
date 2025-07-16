@@ -117,6 +117,14 @@ class CSVLoader:
             conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_name ON {staging_table}(name)")
         if entity == "tracks" and "album_spotify_uri" in columns:
             conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{staging_table}_album_spotify_uri ON {staging_table}(album_spotify_uri)")
+            
+        # Add unique constraints on spotify_uri for data integrity
+        if "spotify_uri" in columns:
+            try:
+                conn.execute(f"ALTER TABLE {staging_table} ADD CONSTRAINT unique_{staging_table}_spotify_uri UNIQUE (spotify_uri)")
+            except Exception as e:
+                if "already exists" not in str(e):
+                    raise
 
     def load(self):
         """Main loading logic"""
@@ -159,7 +167,7 @@ class CSVLoader:
 
 
                 # Create indexes only if you want to look up data in staging
-                # self.create_staging_indexes(conn, entity)
+                self.create_staging_indexes(conn, entity)
                 
                 # Commit everything
                 conn.commit()

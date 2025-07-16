@@ -7,6 +7,7 @@ then rolls back. This gives 100% accurate predictions with zero duplicate logic.
 
 from typing import Dict, List, Any
 from datetime import datetime, timezone
+import time
 from .column_changes import analyze_column_changes_with_comparison
 from .association_changes import analyze_association_changes_with_comparison
 
@@ -26,12 +27,19 @@ class DryRunStatsAnalyzer:
         staging_count = self.conn.execute(f"SELECT COUNT(*) FROM staging_{self.entity}").fetchone()[0]
         main_count = self.conn.execute(f"SELECT COUNT(*) FROM {self.entity}").fetchone()[0]
         
+        import time
+        t_start = time.time()
         # Analyze column changes BEFORE any merge happens
         column_changes, column_comparison = analyze_column_changes_with_comparison(self.conn, self.entity, self.csv_columns, self.policy)
-        
+        t_elapsed = time.time() - t_start
+        print(f"[DEBUG] [{time.strftime('%H:%M:%S', time.localtime())}] Column changes analysis took {t_elapsed:.2f}s")
+
         # Analyze association changes BEFORE any merge happens
+        t_start = time.time()
         association_stats, association_comparison, artist_change_distribution = analyze_association_changes_with_comparison(self.conn, self.entity, self.csv_columns, self.policy)
-        
+        t_elapsed = time.time() - t_start
+        print(f"[DEBUG] [{time.strftime('%H:%M:%S', time.localtime())}] Association changes analysis took {t_elapsed:.2f}s")
+
         return {
             'staging_rows': staging_count,
             'main_rows': main_count,
@@ -200,24 +208,51 @@ def analyze_staging_vs_main_with_merge(conn, entity: str, csv_columns: Dict[str,
     analyzer = DryRunStatsAnalyzer(conn, entity, csv_columns, policy, source_name)
     
     # Capture initial state
+    start_time = time.time()
+    print(f"[DEBUG] [{time.strftime('%H:%M:%S', time.localtime(start_time))}] Capturing initial state for {entity}...")
     stats = analyzer._capture_initial_state()
+    initial_elapsed = time.time() - start_time
     
     # Capture before counts
+    before_start = time.time()
+    print(f"[DEBUG] [{time.strftime('%H:%M:%S', time.localtime(before_start))}] Capturing before counts for {entity}... (initial state took {initial_elapsed:.2f}s)")
     before_counts = analyzer._capture_table_counts()
+    before_elapsed = time.time() - before_start
     
     # Execute all merge SQL
-    for sql in merge_sql:
+    merge_start = time.time()
+    print(f"[DEBUG] [{time.strftime('%H:%M:%S', time.localtime(merge_start))}] Executing merge SQL for {entity}... (before counts took {before_elapsed:.2f}s)")
+    for i, sql in enumerate(merge_sql):
+        stmt_start = time.time()
+        # Print first 100 chars to identify the statement
+        sql_preview = sql.strip()[:100].replace('\n', ' ')
+        print(f"[DEBUG] Statement {i+1}: {sql_preview}...")
         conn.execute(sql)
+        stmt_elapsed = time.time() - stmt_start
+        print(f"[DEBUG] Statement {i+1} took {stmt_elapsed:.2f}s")
+    merge_elapsed = time.time() - merge_start
     
     # Capture after counts
+    after_start = time.time()
+    print(f"[DEBUG] [{time.strftime('%H:%M:%S', time.localtime(after_start))}] Capturing after counts for {entity}... (merge took {merge_elapsed:.2f}s)")
     after_counts = analyzer._capture_table_counts()
+    after_elapsed = time.time() - after_start
     
     # Calculate changes
+    changes_start = time.time()
+    print(f"[DEBUG] [{time.strftime('%H:%M:%S', time.localtime(changes_start))}] Calculating changes for {entity}... (after counts took {after_elapsed:.2f}s)")
     changes = analyzer._calculate_changes(before_counts, after_counts)
     stats['changes'] = changes
+    changes_elapsed = time.time() - changes_start
     
     # Capture final state
+    final_start = time.time()
+    print(f"[DEBUG] [{time.strftime('%H:%M:%S', time.localtime(final_start))}] Capturing final state for {entity}... (changes took {changes_elapsed:.2f}s)")
     stats.update(analyzer._capture_final_state(stats))
+    final_elapsed = time.time() - final_start
+    
+    total_elapsed = time.time() - start_time
+    print(f"[DEBUG] [{time.strftime('%H:%M:%S', time.localtime())}] Analysis complete for {entity} (final state took {final_elapsed:.2f}s, total: {total_elapsed:.2f}s)")
     
     _print_stats_report(entity, stats)
     
